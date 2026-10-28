@@ -41,7 +41,9 @@ COPY --chmod=0755 scripts/start-cdp-relay.sh /usr/local/bin/start-cdp-relay
 COPY --chmod=0755 scripts/healthcheck.sh /usr/local/bin/browser-healthcheck
 COPY supervisord.conf /etc/supervisor/conf.d/browser.conf
 
-ENV DISPLAY=:99 \
+ENV HOME=/home/browser \
+    XDG_RUNTIME_DIR=/run/browser \
+    DISPLAY=:99 \
     SCREEN_WIDTH=1440 \
     SCREEN_HEIGHT=900 \
     SCREEN_DEPTH=24 \

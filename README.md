@@ -196,7 +196,7 @@ The smoke test verifies that:
 - the Chrome process is not launched with `--headless`;
 - the persistent profile directory exists and is writable.
 
-GitHub Actions performs this build-and-smoke sequence on branches and pull requests.
+GitHub Actions performs this build-and-smoke sequence on pull requests and pushes to `main`.
 
 ## Operational boundaries
 

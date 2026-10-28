@@ -13,7 +13,8 @@ if ! jq -e '.Browser | startswith("Chrome/")' <<<"${version_json}" >/dev/null; t
   exit 1
 fi
 
-curl --fail --silent --show-error "${novnc_url}/vnc.html" | grep -q '<title>noVNC'
+novnc_html="$(curl --fail --silent --show-error "${novnc_url}/vnc.html")"
+grep -q '<title>noVNC' <<<"${novnc_html}"
 
 chrome_processes="$(docker exec "${container}" sh -c 'ps auxww | grep -E "[g]oogle-chrome-stable|[/]opt/google/chrome/chrome"')"
 if grep -q -- '--headless' <<<"${chrome_processes}"; then
