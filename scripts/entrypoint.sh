@@ -23,5 +23,12 @@ echo "  display: ${DISPLAY} (${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH})"
 echo "  profile: ${CHROME_USER_DATA_DIR}"
 echo "  noVNC:   :${NOVNC_PORT}"
 echo "  CDP:     :${CDP_PORT} -> 127.0.0.1:${CHROME_INTERNAL_CDP_PORT}"
+if [[ "${CHROME_DISABLE_SANDBOX:-0}" == "1" ]]; then
+  echo "  sandbox: disabled explicitly"
+elif [[ "${CHROME_ALLOW_SANDBOX_FALLBACK:-0}" == "1" ]]; then
+  echo "  sandbox: enabled, local namespace-failure fallback armed"
+else
+  echo "  sandbox: enabled, no fallback"
+fi
 
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/browser.conf

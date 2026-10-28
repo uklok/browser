@@ -3,6 +3,8 @@ services:
     build:
       context: .
     image: uklok/browser:local
+    environment:
+      CHROME_ALLOW_SANDBOX_FALLBACK: "${LOCAL_CHROME_ALLOW_SANDBOX_FALLBACK:-1}"
     ports:
       - "127.0.0.1:${NOVNC_HOST_PORT:-6080}:6080"
       - "127.0.0.1:${CDP_HOST_PORT:-9222}:9222"

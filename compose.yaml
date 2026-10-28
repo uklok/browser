@@ -14,6 +14,7 @@ services:
       CHROME_START_URL: "${CHROME_START_URL:-about:blank}"
       CHROME_EXTRA_ARGS: "${CHROME_EXTRA_ARGS:-}"
       CHROME_DISABLE_SANDBOX: "${CHROME_DISABLE_SANDBOX:-0}"
+      CHROME_ALLOW_SANDBOX_FALLBACK: "${CHROME_ALLOW_SANDBOX_FALLBACK:-0}"
       VNC_PASSWORD: "${VNC_PASSWORD:-}"
     volumes:
       - chrome-profile:/data/chrome

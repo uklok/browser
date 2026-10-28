@@ -81,7 +81,7 @@ BROWSER_IMAGE=ghcr.io/uklok/browser:1.2.3 docker compose up -d
 
 ## Local development and human access
 
-`local.yaml` is the development overlay. It builds the current checkout and publishes CDP/noVNC to **host loopback only**. Because the base service declares `linux/amd64`, this same command works on Apple Silicon through Docker Desktop's amd64 emulation:
+`local.yaml` is the development overlay. It builds the current checkout and publishes CDP/noVNC to **host loopback only**. Because the base service declares `linux/amd64`, this same command works on Apple Silicon through Docker Desktop's amd64 emulation. The local overlay also arms a narrow sandbox fallback: Chrome starts sandboxed first, and only if startup reports the observed namespace failure does it retry with `--no-sandbox`.
 
 ```bash
 docker compose -f compose.yaml -f local.yaml up --build -d
@@ -185,13 +185,16 @@ For migration, copy an existing Chrome profile into a **dedicated, inactive** di
 
 The image runs as the unprivileged `browser` user and does **not** disable Chrome's sandbox by default.
 
-Some unusually restricted or emulated container runtimes prevent Chrome's sandbox from initializing. Gordon's Apple-Silicon smoke run required disabling the sandbox after the amd64 image built successfully. Keep the sandbox enabled first; if Chrome itself fails to start under emulation, retry locally for diagnosis with:
+Some unusually restricted or emulated container runtimes prevent Chrome's sandbox from initializing. In the observed Apple-Silicon Docker Desktop run, Chrome reported `Failed to move to new namespace` and exited before creating a window. The local overlay therefore sets `CHROME_ALLOW_SANDBOX_FALLBACK=1`: it tries normal sandboxed Chrome first and retries with `--no-sandbox` only when that specific namespace failure is observed.
+
+The base deployment keeps both `CHROME_DISABLE_SANDBOX=0` and `CHROME_ALLOW_SANDBOX_FALLBACK=0`, so production never weakens the sandbox automatically. To require sandbox support even during local development:
 
 ```bash
-CHROME_DISABLE_SANDBOX=1 docker compose -f compose.yaml -f local.yaml up --build
+LOCAL_CHROME_ALLOW_SANDBOX_FALLBACK=0 \\
+docker compose -f compose.yaml -f local.yaml up --build -d
 ```
 
-That adds `--no-sandbox` and weakens browser isolation. Prefer fixing the runtime rather than making this permanent.
+For a fully explicit diagnostic override, `CHROME_DISABLE_SANDBOX=1` remains available outside the local overlay. Any `--no-sandbox` path weakens browser isolation.
 
 ## Configuration
 
@@ -208,6 +211,8 @@ That adds `--no-sandbox` and weakens browser isolation. Prefer fixing the runtim
 | `CHROME_START_URL` | `about:blank` | Initial page |
 | `CHROME_EXTRA_ARGS` | empty | Additional whitespace-separated Chrome flags |
 | `CHROME_DISABLE_SANDBOX` | `0` | Explicitly add `--no-sandbox` when set to `1` |
+| `CHROME_ALLOW_SANDBOX_FALLBACK` | `0` | Base/runtime permission to retry only after the known namespace failure |
+| `LOCAL_CHROME_ALLOW_SANDBOX_FALLBACK` | `1` | `local.yaml` override that arms the narrow fallback for Docker Desktop/emulation |
 | `VNC_PASSWORD` | empty | Optional legacy VNC password |
 
 Internal ports can also be changed when running the image directly: `NOVNC_PORT`, `VNC_PORT`, `CDP_PORT`, and `CHROME_INTERNAL_CDP_PORT`.
@@ -239,10 +244,11 @@ docker run -d \
   uklok/browser:local
 ```
 
-Wait for health and run the smoke contract:
+Wait for health and run the smoke contract. A running container can still be unhealthy if Chrome itself failed; inspect health output instead of treating the noVNC page alone as proof that Chrome is alive:
 
 ```bash
 docker inspect --format '{{.State.Health.Status}}' uklok-browser-smoke
+docker inspect --format '{{range .State.Health.Log}}{{.Output}}{{end}}' uklok-browser-smoke
 ./tests/smoke.sh uklok-browser-smoke
 ```
 
