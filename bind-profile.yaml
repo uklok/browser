@@ -1,0 +1,6 @@
+services:
+  browser:
+    volumes:
+      - type: bind
+        source: "${BROWSER_PROFILE_PATH:-${HOME}/.chrome-upwork-cdp}"
+        target: /data/chrome

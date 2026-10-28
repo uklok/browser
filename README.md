@@ -2,12 +2,12 @@
 
 A shared, **headful** Google Chrome session packaged as one Docker image.
 
-A human can see and control the browser through noVNC while an agent or automation client controls the exact same Chrome session through the Chrome DevTools Protocol (CDP). The Chrome profile lives on a persistent volume so cookies, sessions, local storage, extensions, and preferences can survive container restarts.
+A human can see and control the browser through noVNC while an agent or automation client controls the exact same Chrome session through the Chrome DevTools Protocol (CDP). The Chrome profile lives at `/data/chrome` and can be backed by either a Docker volume or an explicit host bind.
 
 ## Architecture
 
 ```text
-                         Docker host
+                         Docker network
 ┌────────────────────────────────────────────────────────────┐
 │                                                            │
 │  browser container                                         │
@@ -25,15 +25,31 @@ A human can see and control the browser through noVNC while an agent or automati
 │                                     │                      │
 │                             websockify/noVNC ──► :6080     │
 │                                                            │
-│  /data/chrome ◄── persistent profile volume                │
+│  /data/chrome ◄── persistent profile                       │
 └────────────────────────────────────────────────────────────┘
           ▲                                ▲
           │                                │
-   127.0.0.1:6080                   127.0.0.1:9222
-     human UI                         agent / CDP
+   browser:6080                     browser:9222
+   sibling human UI                 sibling agent / CDP
 ```
 
-The image deliberately keeps Chrome's own debugging listener on container loopback and relays it through `socat`. That avoids depending on Chrome's external bind behavior while letting the deployment decide whether the relay is reachable. The supplied Compose configuration publishes both human and agent surfaces to **host loopback only**.
+Chrome's own debugging listener remains on container loopback and is deliberately relayed through `socat`. The base Compose model publishes **no host ports**: only sibling containers on the Compose network can reach `browser:6080` and `browser:9222`.
+
+## Published image and versioning
+
+The pipeline publishes this repository as:
+
+```text
+ghcr.io/uklok/browser
+```
+
+Tags have distinct stability semantics:
+
+- every accepted `main` build publishes `edge` plus an immutable commit-derived `sha-<short-sha>` tag;
+- pushing a semantic version tag such as `v1.2.3` publishes `1.2.3`, `1.2`, `1`, `latest`, and the corresponding `sha-*` tag;
+- production deployments should pin a full semantic version or `sha-*` tag rather than following `edge`.
+
+The package is linked back to this repository through OCI source metadata. GitHub Container Registry packages are private when first created unless organization/package visibility is changed explicitly, so authenticate with `docker login ghcr.io` when required.
 
 ## Why a custom profile is mandatory
 
@@ -41,52 +57,49 @@ Chrome 136+ ignores `--remote-debugging-port` for the default Chrome data direct
 
 Reference: <https://developer.chrome.com/blog/remote-debugging-port>
 
-## Start
+## Deployment: container-network only
+
+The canonical deployment consumes the published package and exposes no ports to the Docker host:
 
 ```bash
 cp .env.example .env
-docker compose up --build -d
+docker compose up -d
 ```
 
-Check health:
+A sibling service in the same Compose project can connect to:
+
+```text
+http://browser:9222   # CDP
+http://browser:6080   # noVNC
+```
+
+Set `BROWSER_IMAGE` to the exact package tag the deployment should trust, for example:
 
 ```bash
-docker compose ps
+BROWSER_IMAGE=ghcr.io/uklok/browser:1.2.3 docker compose up -d
+```
+
+## Local development and human access
+
+`local.yaml` is the development overlay. It builds the current checkout and publishes CDP/noVNC to **host loopback only**:
+
+```bash
+docker compose -f compose.yaml -f local.yaml up --build -d
+```
+
+Then:
+
+```bash
 curl http://127.0.0.1:9222/json/version
 ```
 
-Open the human UI:
+and open:
 
 ```text
 http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=scale
 ```
 
-The page displays the same Chrome instance exposed through CDP.
-
-## Connect automation
-
-Any client that can attach to an existing CDP browser can use:
-
-```text
-http://127.0.0.1:9222
-```
-
-Examples include Playwright's CDP connection and Chrome DevTools MCP clients that accept an existing browser URL.
-
-Chrome itself listens on `127.0.0.1:9223` **inside** the container. The public-in-container `:9222` listener is only the relay.
-
-## Remote access
-
-Do **not** publish CDP or noVNC directly to the public Internet. Both surfaces can control a logged-in browser and therefore inherit the authority of its cookies and sessions.
-
-The default Compose bindings are:
-
-```text
-127.0.0.1:6080 -> noVNC
-127.0.0.1:9222 -> CDP
-```
-
-For a remote Docker host, tunnel them:
+For a remote Docker host, keep the loopback bindings and tunnel them:
 
 ```bash
 ssh -N \
@@ -95,60 +108,102 @@ ssh -N \
   user@browser-host
 ```
 
-Then use the same localhost URLs on your workstation. A private WireGuard/Tailscale network can replace the SSH tunnel, but the deployment should still treat both ports as privileged control surfaces.
+Do **not** publish CDP or noVNC directly to the public Internet. Both surfaces can control a logged-in browser and therefore inherit the authority of its cookies and sessions.
 
 ### VNC password
 
-`VNC_PASSWORD` is optional. When omitted, x11vnc accepts the local websockify connection without VNC authentication. That is intentional because **network isolation is the primary boundary** in the supplied deployment.
+`VNC_PASSWORD` is optional. When omitted, x11vnc accepts the local websockify connection without VNC authentication. Network isolation is the primary boundary.
 
 If you set `VNC_PASSWORD`, x11vnc enables legacy VNC password authentication. Do not treat that as a substitute for SSH/VPN/firewall isolation.
 
 ## Persistence
 
-Compose creates the named volume `chrome-profile` and mounts it at:
+By default, `compose.yaml` uses the named volume `chrome-profile` at:
 
 ```text
 /data/chrome
 ```
 
-Chrome receives the same path through `--user-data-dir`.
-
-Remove the container without deleting the volume to preserve the browser identity:
+Remove/recreate the container without deleting that volume to preserve browser identity:
 
 ```bash
 docker compose down
 docker compose up -d
 ```
 
-Delete the profile intentionally:
+Delete the named profile intentionally:
 
 ```bash
 docker compose down --volumes
 ```
 
-That destroys saved browser state.
+### Bind or migrate a host profile
+
+`bind-profile.yaml` replaces the named volume at the same container target with a host bind. Docker Compose merges volumes by container target, so the later overlay replaces `chrome-profile:/data/chrome`.
+
+The default host path is:
+
+```text
+$HOME/.chrome-upwork-cdp
+```
+
+Create it first and make sure it is writable by the image's browser user (UID 1000):
+
+```bash
+mkdir -p "${BROWSER_PROFILE_PATH:-$HOME/.chrome-upwork-cdp}"
+```
+
+Use the bind with the published image:
+
+```bash
+docker compose \
+  -f compose.yaml \
+  -f bind-profile.yaml \
+  up -d
+```
+
+Or combine it with the local-development overlay:
+
+```bash
+docker compose \
+  -f compose.yaml \
+  -f local.yaml \
+  -f bind-profile.yaml \
+  up --build -d
+```
+
+Override the source when needed:
+
+```bash
+BROWSER_PROFILE_PATH=/path/to/dedicated/chrome-profile \
+docker compose -f compose.yaml -f bind-profile.yaml up -d
+```
+
+For migration, copy an existing Chrome profile into a **dedicated, inactive** directory and bind that copy. Do not mount the same live profile into host Chrome and container Chrome simultaneously; Chrome profile locks and concurrent writes make that unsafe.
 
 ## Chrome sandbox
 
 The image runs as the unprivileged `browser` user and does **not** disable Chrome's sandbox by default.
 
-Some unusually restricted container runtimes prevent Chrome's sandbox from initializing. For diagnosis only, the image supports:
+Some unusually restricted container runtimes prevent Chrome's sandbox from initializing. For diagnosis only:
 
 ```bash
-CHROME_DISABLE_SANDBOX=1 docker compose up
+CHROME_DISABLE_SANDBOX=1 docker compose -f compose.yaml -f local.yaml up --build
 ```
 
-That adds `--no-sandbox` and weakens browser isolation. Prefer fixing the runtime rather than making this a permanent deployment setting.
+That adds `--no-sandbox` and weakens browser isolation. Prefer fixing the runtime rather than making this permanent.
 
 ## Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `BROWSER_IMAGE` | `ghcr.io/uklok/browser:edge` | Published package reference used by the base deployment |
+| `BROWSER_PROFILE_PATH` | `$HOME/.chrome-upwork-cdp` | Host profile path used by `bind-profile.yaml` |
 | `SCREEN_WIDTH` | `1440` | Virtual display width |
 | `SCREEN_HEIGHT` | `900` | Virtual display height |
 | `SCREEN_DEPTH` | `24` | Virtual display color depth |
-| `NOVNC_HOST_PORT` | `6080` | Host-loopback port for noVNC |
-| `CDP_HOST_PORT` | `9222` | Host-loopback port for CDP |
+| `NOVNC_HOST_PORT` | `6080` | Host-loopback noVNC port in `local.yaml` |
+| `CDP_HOST_PORT` | `9222` | Host-loopback CDP port in `local.yaml` |
 | `CHROME_START_URL` | `about:blank` | Initial page |
 | `CHROME_EXTRA_ARGS` | empty | Additional whitespace-separated Chrome flags |
 | `CHROME_DISABLE_SANDBOX` | `0` | Explicitly add `--no-sandbox` when set to `1` |
@@ -193,17 +248,18 @@ The smoke test verifies that:
 
 - CDP reports Google Chrome;
 - noVNC serves its client;
+- Xvfb is alive;
 - the Chrome process is not launched with `--headless`;
 - the persistent profile directory exists and is writable.
 
-GitHub Actions performs this build-and-smoke sequence on pull requests and pushes to `main`.
+GitHub Actions performs build-and-smoke validation on pull requests and accepted pushes. Package publication happens only after that validation succeeds on `main` or a semantic version tag.
 
 ## Operational boundaries
 
 - CDP is equivalent to browser control. Anyone who can reach it can navigate, execute JavaScript, read pages, and act with the browser's authenticated sessions.
 - noVNC gives equivalent human keyboard/mouse control.
-- Do not use a personal/default host Chrome profile as the container profile.
 - Keep `/data/chrome` access scoped to the workload that owns this browser identity.
+- Prefer a dedicated copied profile for bind mounts rather than the default host Chrome profile.
 - Container isolation is not a substitute for account-level MFA, least privilege, or secret handling.
 
 ## Development governance

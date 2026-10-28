@@ -1,13 +1,11 @@
 services:
   browser:
-    build:
-      context: .
-    image: uklok/browser:local
+    image: "${BROWSER_IMAGE:-ghcr.io/uklok/browser:edge}"
     shm_size: 2gb
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:${NOVNC_HOST_PORT:-6080}:6080"
-      - "127.0.0.1:${CDP_HOST_PORT:-9222}:9222"
+    expose:
+      - "6080"
+      - "9222"
     environment:
       SCREEN_WIDTH: "${SCREEN_WIDTH:-1440}"
       SCREEN_HEIGHT: "${SCREEN_HEIGHT:-900}"

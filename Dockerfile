@@ -2,6 +2,9 @@ FROM debian:bookworm-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+LABEL org.opencontainers.image.source="https://github.com/uklok/browser" \
+      org.opencontainers.image.description="Shared headful Chrome session with noVNC and CDP access"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
