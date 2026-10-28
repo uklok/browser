@@ -1,0 +1,23 @@
+services:
+  browser:
+    build:
+      context: .
+    image: uklok/browser:local
+    shm_size: 2gb
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${NOVNC_HOST_PORT:-6080}:6080"
+      - "127.0.0.1:${CDP_HOST_PORT:-9222}:9222"
+    environment:
+      SCREEN_WIDTH: "${SCREEN_WIDTH:-1440}"
+      SCREEN_HEIGHT: "${SCREEN_HEIGHT:-900}"
+      SCREEN_DEPTH: "${SCREEN_DEPTH:-24}"
+      CHROME_START_URL: "${CHROME_START_URL:-about:blank}"
+      CHROME_EXTRA_ARGS: "${CHROME_EXTRA_ARGS:-}"
+      CHROME_DISABLE_SANDBOX: "${CHROME_DISABLE_SANDBOX:-0}"
+      VNC_PASSWORD: "${VNC_PASSWORD:-}"
+    volumes:
+      - chrome-profile:/data/chrome
+
+volumes:
+  chrome-profile:

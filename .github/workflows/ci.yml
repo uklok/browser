@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --pull --tag uklok/browser:test .
+
+      - name: Start browser
+        run: |
+          docker run --detach \
+            --name uklok-browser-smoke \
+            --shm-size=2g \
+            --publish 127.0.0.1:6080:6080 \
+            --publish 127.0.0.1:9222:9222 \
+            --volume uklok-browser-smoke-profile:/data/chrome \
+            uklok/browser:test
+
+      - name: Wait for container health
+        run: |
+          for attempt in $(seq 1 60); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' uklok-browser-smoke)"
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              docker logs uklok-browser-smoke
+              exit 1
+            fi
+            sleep 2
+          done
+
+          docker logs uklok-browser-smoke
+          exit 1
+
+      - name: Smoke test shared browser surfaces
+        run: ./tests/smoke.sh uklok-browser-smoke
+
+      - name: Container logs
+        if: always()
+        run: docker logs uklok-browser-smoke || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm --force uklok-browser-smoke || true
+          docker volume rm uklok-browser-smoke-profile || true
