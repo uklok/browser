@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+skill_dir="${root}/.agents/skills/browser-use"
+
+if ! command -v uv >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+ERROR: uv is required.
+
+macOS with Homebrew:
+  brew install uv
+
+Other platforms:
+  https://docs.astral.sh/uv/getting-started/installation/
+EOF
+  exit 1
+fi
+
+echo "Resolving pinned Browser Use CLI..."
+"${root}/bin/browser-use" --version
+
+echo "Installing upstream Browser Use skill into the repo-local skill directory..."
+"${root}/bin/browser-use" skill install   --no-install   --path "${skill_dir}"
+
+echo
+echo "Browser Use Phase A setup complete."
+echo "  skill: ${skill_dir}/SKILL.md"
+echo "  CDP default: http://127.0.0.1:${CDP_HOST_PORT:-9222}"
+echo
+echo "Next:"
+echo "  ${root}/bin/browser-use-doctor"
