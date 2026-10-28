@@ -18,4 +18,4 @@ fi
 export BU_CDP_URL="${BU_CDP_URL:-http://127.0.0.1:${CDP_HOST_PORT:-9222}}"
 export BH_TAB_MARKER="${BH_TAB_MARKER:-0}"
 
-exec uv tool run   --python 3.12   --from "${spec}"   browser-use "$@"
+exec uv tool run --isolated --python 3.12 --from "${spec}" browser-use "$@"
