@@ -33,7 +33,7 @@ A human can see and control the browser through noVNC while an agent or automati
    sibling human UI                 sibling agent / CDP
 ```
 
-Chrome's own debugging listener remains on container loopback and is deliberately relayed through `socat`. The base Compose model publishes **no host ports**: only sibling containers on the Compose network can reach `browser:6080` and `browser:9222`.
+Chrome's own debugging listener remains on container loopback and is deliberately relayed through `socat`. The base Compose model publishes **no host ports**: only sibling containers on the Compose network can reach `browser:6080` and `browser:9222`. The current image is explicitly `linux/amd64`; Docker Desktop on Apple Silicon runs it through amd64 emulation.
 
 ## Published image and versioning
 
@@ -59,7 +59,7 @@ Reference: <https://developer.chrome.com/blog/remote-debugging-port>
 
 ## Deployment: container-network only
 
-The canonical deployment consumes the published package and exposes no ports to the Docker host:
+The canonical deployment consumes the published package, pins the service platform to `${BROWSER_PLATFORM:-linux/amd64}`, and exposes no ports to the Docker host:
 
 ```bash
 cp .env.example .env
@@ -81,7 +81,7 @@ BROWSER_IMAGE=ghcr.io/uklok/browser:1.2.3 docker compose up -d
 
 ## Local development and human access
 
-`local.yaml` is the development overlay. It builds the current checkout and publishes CDP/noVNC to **host loopback only**:
+`local.yaml` is the development overlay. It builds the current checkout and publishes CDP/noVNC to **host loopback only**. Because the base service declares `linux/amd64`, this same command works on Apple Silicon through Docker Desktop's amd64 emulation:
 
 ```bash
 docker compose -f compose.yaml -f local.yaml up --build -d
@@ -185,7 +185,7 @@ For migration, copy an existing Chrome profile into a **dedicated, inactive** di
 
 The image runs as the unprivileged `browser` user and does **not** disable Chrome's sandbox by default.
 
-Some unusually restricted container runtimes prevent Chrome's sandbox from initializing. For diagnosis only:
+Some unusually restricted or emulated container runtimes prevent Chrome's sandbox from initializing. Gordon's Apple-Silicon smoke run required disabling the sandbox after the amd64 image built successfully. Keep the sandbox enabled first; if Chrome itself fails to start under emulation, retry locally for diagnosis with:
 
 ```bash
 CHROME_DISABLE_SANDBOX=1 docker compose -f compose.yaml -f local.yaml up --build
@@ -198,6 +198,7 @@ That adds `--no-sandbox` and weakens browser isolation. Prefer fixing the runtim
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `BROWSER_IMAGE` | `ghcr.io/uklok/browser:edge` | Published package reference used by the base deployment |
+| `BROWSER_PLATFORM` | `linux/amd64` | Image/build platform; Apple Silicon uses Docker emulation |
 | `BROWSER_PROFILE_PATH` | `$HOME/.chrome-upwork-cdp` | Host profile path used by `bind-profile.yaml` |
 | `SCREEN_WIDTH` | `1440` | Virtual display width |
 | `SCREEN_HEIGHT` | `900` | Virtual display height |
@@ -215,14 +216,14 @@ Internal ports can also be changed when running the image directly: `NOVNC_PORT`
 
 Chrome is memory hungry. The supplied Compose file allocates a 2 GiB shared-memory segment because a tiny Docker `/dev/shm` is a common source of browser instability.
 
-The first implementation targets `linux/amd64`, matching the Google Chrome APT repository declaration in the Dockerfile. Add an architecture only after its Chrome distribution path is verified and exercised in CI.
+The first implementation targets `linux/amd64`, matching the Google Chrome APT repository and the Dockerfile architecture guard. `compose.yaml` therefore declares `linux/amd64` explicitly so Apple-Silicon hosts do not accidentally build the Debian arm64 base and fail at that guard. Add native arm64 only after its browser distribution path is verified and exercised in CI.
 
 ## Build and verify
 
 Build:
 
 ```bash
-docker build -t uklok/browser:local .
+docker build --platform=linux/amd64 -t uklok/browser:local .
 ```
 
 Run directly:
@@ -230,6 +231,7 @@ Run directly:
 ```bash
 docker run -d \
   --name uklok-browser-smoke \
+  --platform linux/amd64 \
   --shm-size=2g \
   -p 127.0.0.1:6080:6080 \
   -p 127.0.0.1:9222:9222 \
@@ -252,7 +254,7 @@ The smoke test verifies that:
 - the Chrome process is not launched with `--headless`;
 - the persistent profile directory exists and is writable.
 
-GitHub Actions performs build-and-smoke validation on pull requests and accepted pushes. Package publication happens only after that validation succeeds on `main` or a semantic version tag.
+GitHub Actions runs build-and-smoke validation only for pull requests that change browser/runtime, Compose, test, or workflow inputs. A separate publish workflow runs only when image-producing inputs (`Dockerfile`, `.dockerignore`, `scripts/**`, or `supervisord.conf`) reach `main`, or when a semantic version tag is pushed. Documentation-only changes therefore neither rebuild nor republish the image.
 
 ## Operational boundaries
 

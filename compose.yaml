@@ -1,6 +1,7 @@
 services:
   browser:
     image: "${BROWSER_IMAGE:-ghcr.io/uklok/browser:edge}"
+    platform: "${BROWSER_PLATFORM:-linux/amd64}"
     shm_size: 2gb
     restart: unless-stopped
     expose:

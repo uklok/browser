@@ -1,12 +1,19 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "v*.*.*"
   pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "scripts/**"
+      - "supervisord.conf"
+      - "tests/**"
+      - "compose.yaml"
+      - "local.yaml"
+      - "bind-profile.yaml"
+      - ".env.example"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/publish.yml"
 
 permissions:
   contents: read
@@ -20,13 +27,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Validate Compose layers
+        run: |
+          docker compose -f compose.yaml config --quiet
+          docker compose -f compose.yaml -f local.yaml config --quiet
+          docker compose -f compose.yaml -f bind-profile.yaml config --quiet
+          docker compose -f compose.yaml -f local.yaml -f bind-profile.yaml config --quiet
+
       - name: Build image
-        run: docker build --pull --tag uklok/browser:test .
+        run: docker build --pull --platform=linux/amd64 --tag uklok/browser:test .
 
       - name: Start browser
         run: |
           docker run --detach \
             --name uklok-browser-smoke \
+            --platform linux/amd64 \
             --shm-size=2g \
             --publish 127.0.0.1:6080:6080 \
             --publish 127.0.0.1:9222:9222 \
@@ -62,45 +77,3 @@ jobs:
         run: |
           docker rm --force uklok-browser-smoke || true
           docker volume rm uklok-browser-smoke-profile || true
-
-  publish:
-    if: github.event_name == 'push'
-    needs: build-and-smoke
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Derive image tags
-        id: meta
-        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
-        with:
-          images: ghcr.io/${{ github.repository }}
-          flavor: latest=false
-          tags: |
-            type=sha,prefix=sha-
-            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-
-      - name: Build and publish image
-        uses: docker/build-push-action@3b5e8027fcad23fda98b2e3ac259d8d67585f671
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
