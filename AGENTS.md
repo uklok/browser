@@ -11,8 +11,9 @@ Read that entrypoint as the authority for issue → branch → review, evidence,
 1. Open the assigned issue/PR and identify the concrete outcome.
 2. Use [README.md](README.md) to choose the relevant task path.
 3. For runtime, Docker, CDP/noVNC, profile, platform, or browser-startup work, load [browser-runtime](.agents/skills/browser-runtime/SKILL.md).
-4. Read only the task-specific page under [docs/](docs/README.md); do not ingest the entire documentation set by default.
-5. Prove the user-visible/runtime claim, not merely file validity.
+4. For **operating pages in a healthy browser**, use [Browser Use — Phase A](docs/browser-use.md). If `.agents/skills/browser-use/SKILL.md` is absent, run `./bin/browser-use-setup`, then load that generated upstream skill and drive the browser through `./bin/browser-use`.
+5. Read only the task-specific page under [docs/](docs/README.md); do not ingest the entire documentation set by default.
+6. Prove the user-visible/runtime claim, not merely file validity.
 
 ## Repo invariants
 
@@ -27,7 +28,9 @@ Treat these as current implementation constraints unless the task explicitly cha
 - macOS/Windows Chrome profiles are not authentication-portable into this Linux browser;
 - bind-mounted non-empty profiles require an explicit UKLOK marker or intentional adoption;
 - stale Chrome `Singleton*` artifacts are startup debris, not durable identity;
-- accepted image publication is separate from documentation/Compose-only changes.
+- accepted image publication is separate from documentation/Compose-only changes;
+- Browser Use is a capability layer over the existing Chrome: `BU_CDP_URL` must point at the UKLOK-owned CDP endpoint rather than silently introducing another browser owner;
+- the Browser Use operation skill is generated from the pinned upstream package and is not UKLOK-owned doctrine.
 
 ## Where truth lives
 
@@ -41,6 +44,7 @@ Treat these as current implementation constraints unless the task explicitly cha
 | When/how is an image published? | `docs/releases.md` |
 | What proves runtime acceptance? | `tests/smoke.sh` + workflow restart smoke |
 | How should an agent reason about this runtime? | `.agents/skills/browser-runtime/SKILL.md` |
+| How should an agent operate healthy pages? | `docs/browser-use.md` + generated `.agents/skills/browser-use/SKILL.md` |
 
 Do not duplicate these rules into new files. Update the natural owner and repair inbound links when the contract changes.
 

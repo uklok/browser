@@ -84,3 +84,14 @@ ssh -N \
 ```
 
 Never expose CDP or noVNC directly to the public Internet.
+
+## Next: agent control
+
+With the local browser healthy:
+
+```bash
+./bin/browser-use-setup
+./bin/browser-use-doctor
+```
+
+Then follow [Browser Use — Phase A](browser-use.md). Browser Use attaches to the existing CDP endpoint; the Chrome/profile/noVNC lifecycle stays owned by UKLOK Browser.
