@@ -10,7 +10,11 @@ if [[ ! -w "${CHROME_USER_DATA_DIR}" ]]; then
   exit 1
 fi
 
-if [[ -z "${VNC_PASSWORD:-}" ]]; then
+if [[ -n "${VNC_PASSWORD:-}" ]]; then
+  printf '%s\n' "${VNC_PASSWORD}" > /run/browser/vnc.pass
+  chmod 0600 /run/browser/vnc.pass
+else
+  rm -f /run/browser/vnc.pass
   echo "WARNING: VNC authentication is disabled. Keep port ${NOVNC_PORT} bound to host loopback or a private network." >&2
 fi
 

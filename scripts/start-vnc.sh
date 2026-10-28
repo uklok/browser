@@ -17,8 +17,8 @@ args=(
   "-xkb"
 )
 
-if [[ -n "${VNC_PASSWORD:-}" ]]; then
-  args+=("-passwd" "${VNC_PASSWORD}")
+if [[ -f /run/browser/vnc.pass ]]; then
+  args+=("-passwdfile" "/run/browser/vnc.pass")
 else
   args+=("-nopw")
 fi
