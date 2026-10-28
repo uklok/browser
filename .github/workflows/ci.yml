@@ -68,6 +68,24 @@ jobs:
       - name: Smoke test shared browser surfaces
         run: ./tests/smoke.sh uklok-browser-smoke
 
+      - name: Restart with the same profile
+        run: |
+          docker restart uklok-browser-smoke
+          for attempt in $(seq 1 60); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' uklok-browser-smoke)"
+            if [ "$status" = "healthy" ]; then
+              ./tests/smoke.sh uklok-browser-smoke
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              docker logs uklok-browser-smoke
+              exit 1
+            fi
+            sleep 2
+          done
+          docker logs uklok-browser-smoke
+          exit 1
+
       - name: Container logs
         if: always()
         run: docker logs uklok-browser-smoke || true

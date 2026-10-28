@@ -137,32 +137,23 @@ Delete the named profile intentionally:
 docker compose down --volumes
 ```
 
-### Bind or migrate a host profile
+### Bind a container-owned profile to the host
 
-`bind-profile.yaml` replaces the named volume at the same container target with a host bind. Docker Compose merges volumes by container target, so the later overlay replaces `chrome-profile:/data/chrome`.
+`bind-profile.yaml` replaces the named volume at the same container target with a host directory. This is useful when you want the Linux browser identity to be inspectable/backed up from the host, but the directory is still **owned exclusively by the container browser**.
 
 The default host path is:
 
 ```text
-$HOME/.chrome-upwork-cdp
+$HOME/.uklok-browser/chrome-profile
 ```
 
-Create it first and make sure it is writable by the image's browser user (UID 1000):
+Create an empty directory first and make sure it is writable by the image's browser user (UID 1000):
 
 ```bash
-mkdir -p "${BROWSER_PROFILE_PATH:-$HOME/.chrome-upwork-cdp}"
+mkdir -p "${BROWSER_PROFILE_PATH:-$HOME/.uklok-browser/chrome-profile}"
 ```
 
-Use the bind with the published image:
-
-```bash
-docker compose \
-  -f compose.yaml \
-  -f bind-profile.yaml \
-  up -d
-```
-
-Or combine it with the local-development overlay:
+Use it with the local overlay:
 
 ```bash
 docker compose \
@@ -172,14 +163,22 @@ docker compose \
   up --build -d
 ```
 
-Override the source when needed:
+On first start the container writes a `.uklok-browser-managed` marker. If the bind target is non-empty and has no marker, startup refuses to touch it by default. That guard exists specifically to prevent accidentally mounting a host Chrome profile into Linux.
 
-```bash
-BROWSER_PROFILE_PATH=/path/to/dedicated/chrome-profile \
-docker compose -f compose.yaml -f bind-profile.yaml up -d
-```
+#### Existing macOS/Windows Chrome profiles are not authentication-portable
 
-For migration, copy an existing Chrome profile into a **dedicated, inactive** directory and bind that copy. Do not mount the same live profile into host Chrome and container Chrome simultaneously; Chrome profile locks and concurrent writes make that unsafe.
+Do **not** point `BROWSER_PROFILE_PATH` at a macOS or Windows Chrome user-data-dir, even when Chrome on the host is closed. History/tabs/bookmarks may be ordinary profile files, but credentials and authentication material depend on platform-specific secret storage. macOS Chrome relies on Keychain-backed key material while Linux Chrome uses Linux secret-storage backends (or the explicitly selected basic backend in this container). Copying the directory does not copy the OS-held key.
+
+The supported bootstrap is therefore:
+
+1. start an empty container-owned profile;
+2. open noVNC;
+3. authenticate to the required sites once inside the Linux Chrome session;
+4. keep that profile volume/bind as the durable browser identity.
+
+A full `down` + `up` reuses that identity. At startup UKLOK Browser removes stale `SingletonLock`, `SingletonCookie`, and `SingletonSocket` artifacts from its managed profile before Chrome starts, preventing an old container hostname/PID lock from causing the “profile appears to be in use” dialog.
+
+For a same-platform Linux profile that you intentionally want to hand over permanently, `BROWSER_PROFILE_ADOPT_EXISTING=1` bypasses the non-empty-directory guard once. Treat that as an ownership transfer, not as a shared profile. Never run two Chrome instances against the same user-data-dir.
 
 ## Chrome sandbox
 
@@ -202,7 +201,8 @@ For a fully explicit diagnostic override, `CHROME_DISABLE_SANDBOX=1` remains ava
 | --- | --- | --- |
 | `BROWSER_IMAGE` | `ghcr.io/uklok/browser:edge` | Published package reference used by the base deployment |
 | `BROWSER_PLATFORM` | `linux/amd64` | Image/build platform; Apple Silicon uses Docker emulation |
-| `BROWSER_PROFILE_PATH` | `$HOME/.chrome-upwork-cdp` | Host profile path used by `bind-profile.yaml` |
+| `BROWSER_PROFILE_PATH` | `$HOME/.uklok-browser/chrome-profile` | Host directory for the container-owned Linux profile |
+| `BROWSER_PROFILE_ADOPT_EXISTING` | `0` | Explicit one-time adoption of a non-empty same-platform profile |
 | `SCREEN_WIDTH` | `1440` | Virtual display width |
 | `SCREEN_HEIGHT` | `900` | Virtual display height |
 | `SCREEN_DEPTH` | `24` | Virtual display color depth |
@@ -267,7 +267,8 @@ GitHub Actions runs build-and-smoke validation only for pull requests that chang
 - CDP is equivalent to browser control. Anyone who can reach it can navigate, execute JavaScript, read pages, and act with the browser's authenticated sessions.
 - noVNC gives equivalent human keyboard/mouse control.
 - Keep `/data/chrome` access scoped to the workload that owns this browser identity.
-- Prefer a dedicated copied profile for bind mounts rather than the default host Chrome profile.
+- Never share one user-data-dir between host Chrome and container Chrome.
+- A bind-mounted profile is a Linux-container identity, not a cross-platform clone of a macOS/Windows login session.
 - Container isolation is not a substitute for account-level MFA, least privilege, or secret handling.
 
 ## Development governance
