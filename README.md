@@ -1,161 +1,55 @@
 # UKLOK Browser
 
-A shared, **headful** Google Chrome session packaged as one Docker image.
+One **headful Google Chrome** session that a human and an agent can share.
 
-A human can see and control the browser through noVNC while an agent or automation client controls the exact same Chrome session through the Chrome DevTools Protocol (CDP). The Chrome profile lives at `/data/chrome` and can be backed by either a Docker volume or an explicit host bind.
+- Human control: noVNC
+- Agent control: Chrome DevTools Protocol (CDP)
+- Durable identity: persistent Linux Chrome profile
+- Default deployment: Docker-network only
+- Local development: loopback-only host access
+- Current image platform: `linux/amd64`
 
-## Architecture
+## Choose your path
 
-```text
-                         Docker network
-┌────────────────────────────────────────────────────────────┐
-│                                                            │
-│  browser container                                         │
-│                                                            │
-│  Xvfb :99 ──► Openbox ──► Google Chrome (headful)          │
-│                              │                             │
-│                              ├─ CDP 127.0.0.1:9223         │
-│                              │        │                    │
-│                              │      socat ──► :9222        │
-│                              │                             │
-│                              └─ framebuffer                │
-│                                     │                      │
-│                                  x11vnc                    │
-│                              127.0.0.1:5900                │
-│                                     │                      │
-│                             websockify/noVNC ──► :6080     │
-│                                                            │
-│  /data/chrome ◄── persistent profile                       │
-└────────────────────────────────────────────────────────────┘
-          ▲                                ▲
-          │                                │
-   browser:6080                     browser:9222
-   sibling human UI                 sibling agent / CDP
-```
+| I want to… | Go here |
+| --- | --- |
+| Run it locally | [Quick start](docs/quickstart.md) |
+| Understand the moving parts | [Architecture](docs/architecture.md) |
+| Keep logins across restarts | [Profiles & identity](docs/profiles.md) |
+| Debug a black screen / unhealthy browser | [Operations](docs/operations.md) |
+| Understand the security boundaries | [Security](docs/security.md) |
+| Publish or pin an image version | [Releases](docs/releases.md) |
+| Work on this repo as an agent | [AGENTS.md](AGENTS.md) |
 
-Chrome's own debugging listener remains on container loopback and is deliberately relayed through `socat`. The base Compose model publishes **no host ports**: only sibling containers on the Compose network can reach `browser:6080` and `browser:9222`. The current image is explicitly `linux/amd64`; Docker Desktop on Apple Silicon runs it through amd64 emulation.
+Full documentation index: [docs/README.md](docs/README.md).
 
-## Published image and versioning
-
-The pipeline publishes this repository as:
-
-```text
-ghcr.io/uklok/browser
-```
-
-Tags have distinct stability semantics:
-
-- every accepted `main` build publishes `edge` plus an immutable commit-derived `sha-<short-sha>` tag;
-- pushing a semantic version tag such as `v1.2.3` publishes `1.2.3`, `1.2`, `1`, `latest`, and the corresponding `sha-*` tag;
-- production deployments should pin a full semantic version or `sha-*` tag rather than following `edge`.
-
-The package is linked back to this repository through OCI source metadata. GitHub Container Registry packages are private when first created unless organization/package visibility is changed explicitly, so authenticate with `docker login ghcr.io` when required.
-
-## Why a custom profile is mandatory
-
-Chrome 136+ ignores `--remote-debugging-port` for the default Chrome data directory. This image always launches Chrome with the explicit non-default profile path `/data/chrome`, which is also the persistence boundary.
-
-Reference: <https://developer.chrome.com/blog/remote-debugging-port>
-
-## Deployment: container-network only
-
-The canonical deployment consumes the published package, pins the service platform to `${BROWSER_PLATFORM:-linux/amd64}`, and exposes no ports to the Docker host:
+## Fastest local start
 
 ```bash
 cp .env.example .env
-docker compose up -d
-```
 
-A sibling service in the same Compose project can connect to:
-
-```text
-http://browser:9222   # CDP
-http://browser:6080   # noVNC
-```
-
-Set `BROWSER_IMAGE` to the exact package tag the deployment should trust, for example:
-
-```bash
-BROWSER_IMAGE=ghcr.io/uklok/browser:1.2.3 docker compose up -d
-```
-
-## Local development and human access
-
-`local.yaml` is the development overlay. It builds the current checkout and publishes CDP/noVNC to **host loopback only**. Because the base service declares `linux/amd64`, this same command works on Apple Silicon through Docker Desktop's amd64 emulation. The local overlay also arms a narrow sandbox fallback: Chrome starts sandboxed first, and only if startup reports the observed namespace failure does it retry with `--no-sandbox`.
-
-```bash
-docker compose -f compose.yaml -f local.yaml up --build -d
+docker compose \
+  -f compose.yaml \
+  -f local.yaml \
+  up --build -d
 ```
 
 Then:
 
-```bash
-curl http://127.0.0.1:9222/json/version
-```
+- noVNC: <http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=scale>
+- CDP: <http://127.0.0.1:9222/json/version>
 
-and open:
+On Apple Silicon, Docker Desktop runs the current `linux/amd64` image through emulation. The local overlay attempts sandboxed Chrome first and only falls back to `--no-sandbox` for the known namespace failure. Production does not enable that fallback.
 
-```text
-http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=scale
-```
+## Persistent browser identity
 
-For a remote Docker host, keep the loopback bindings and tunnel them:
+The easiest persistence path is the named Docker volume in `compose.yaml`.
 
-```bash
-ssh -N \
-  -L 6080:127.0.0.1:6080 \
-  -L 9222:127.0.0.1:9222 \
-  user@browser-host
-```
-
-Do **not** publish CDP or noVNC directly to the public Internet. Both surfaces can control a logged-in browser and therefore inherit the authority of its cookies and sessions.
-
-### VNC password
-
-`VNC_PASSWORD` is optional. When omitted, x11vnc accepts the local websockify connection without VNC authentication. Network isolation is the primary boundary.
-
-If you set `VNC_PASSWORD`, x11vnc enables legacy VNC password authentication. Do not treat that as a substitute for SSH/VPN/firewall isolation.
-
-## Persistence
-
-By default, `compose.yaml` uses the named volume `chrome-profile` at:
-
-```text
-/data/chrome
-```
-
-Remove/recreate the container without deleting that volume to preserve browser identity:
+For a host-visible profile owned by the Linux container:
 
 ```bash
-docker compose down
-docker compose up -d
-```
+mkdir -p "$HOME/.uklok-browser/chrome-profile"
 
-Delete the named profile intentionally:
-
-```bash
-docker compose down --volumes
-```
-
-### Bind a container-owned profile to the host
-
-`bind-profile.yaml` replaces the named volume at the same container target with a host directory. This is useful when you want the Linux browser identity to be inspectable/backed up from the host, but the directory is still **owned exclusively by the container browser**.
-
-The default host path is:
-
-```text
-$HOME/.uklok-browser/chrome-profile
-```
-
-Create an empty directory first and make sure it is writable by the image's browser user (UID 1000):
-
-```bash
-mkdir -p "${BROWSER_PROFILE_PATH:-$HOME/.uklok-browser/chrome-profile}"
-```
-
-Use it with the local overlay:
-
-```bash
 docker compose \
   -f compose.yaml \
   -f local.yaml \
@@ -163,118 +57,24 @@ docker compose \
   up --build -d
 ```
 
-On first start the container writes a `.uklok-browser-managed` marker. If the bind target is non-empty and has no marker, startup refuses to touch it by default. That guard exists specifically to prevent accidentally mounting a host Chrome profile into Linux.
+Authenticate once **inside this Linux Chrome session**. Do not mount a macOS/Windows Chrome user-data directory into the container; authentication secrets are not cross-platform portable. See [Profiles & identity](docs/profiles.md).
 
-#### Existing macOS/Windows Chrome profiles are not authentication-portable
+## Runtime contract
 
-Do **not** point `BROWSER_PROFILE_PATH` at a macOS or Windows Chrome user-data-dir, even when Chrome on the host is closed. History/tabs/bookmarks may be ordinary profile files, but credentials and authentication material depend on platform-specific secret storage. macOS Chrome relies on Keychain-backed key material while Linux Chrome uses Linux secret-storage backends (or the explicitly selected basic backend in this container). Copying the directory does not copy the OS-held key.
+A healthy session means all of these are true:
 
-The supported bootstrap is therefore:
+1. Xvfb is alive.
+2. Chrome is headful and running.
+3. CDP answers on `:9222`.
+4. noVNC serves the same display on `:6080`.
+5. The Chrome profile is writable and survives restart.
 
-1. start an empty container-owned profile;
-2. open noVNC;
-3. authenticate to the required sites once inside the Linux Chrome session;
-4. keep that profile volume/bind as the durable browser identity.
+`tests/smoke.sh` encodes that contract.
 
-A full `down` + `up` reuses that identity. At startup UKLOK Browser removes stale `SingletonLock`, `SingletonCookie`, and `SingletonSocket` artifacts from its managed profile before Chrome starts, preventing an old container hostname/PID lock from causing the “profile appears to be in use” dialog.
+## Governance
 
-For a same-platform Linux profile that you intentionally want to hand over permanently, `BROWSER_PROFILE_ADOPT_EXISTING=1` bypasses the non-empty-directory guard once. Treat that as an ownership transfer, not as a shared profile. Never run two Chrome instances against the same user-data-dir.
-
-## Chrome sandbox
-
-The image runs as the unprivileged `browser` user and does **not** disable Chrome's sandbox by default.
-
-Some unusually restricted or emulated container runtimes prevent Chrome's sandbox from initializing. In the observed Apple-Silicon Docker Desktop run, Chrome reported `Failed to move to new namespace` and exited before creating a window. The local overlay therefore sets `CHROME_ALLOW_SANDBOX_FALLBACK=1`: it tries normal sandboxed Chrome first and retries with `--no-sandbox` only when that specific namespace failure is observed.
-
-The base deployment keeps both `CHROME_DISABLE_SANDBOX=0` and `CHROME_ALLOW_SANDBOX_FALLBACK=0`, so production never weakens the sandbox automatically. To require sandbox support even during local development:
-
-```bash
-LOCAL_CHROME_ALLOW_SANDBOX_FALLBACK=0 \\
-docker compose -f compose.yaml -f local.yaml up --build -d
-```
-
-For a fully explicit diagnostic override, `CHROME_DISABLE_SANDBOX=1` remains available outside the local overlay. Any `--no-sandbox` path weakens browser isolation.
-
-## Configuration
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `BROWSER_IMAGE` | `ghcr.io/uklok/browser:edge` | Published package reference used by the base deployment |
-| `BROWSER_PLATFORM` | `linux/amd64` | Image/build platform; Apple Silicon uses Docker emulation |
-| `BROWSER_PROFILE_PATH` | `$HOME/.uklok-browser/chrome-profile` | Host directory for the container-owned Linux profile |
-| `BROWSER_PROFILE_ADOPT_EXISTING` | `0` | Explicit one-time adoption of a non-empty same-platform profile |
-| `SCREEN_WIDTH` | `1440` | Virtual display width |
-| `SCREEN_HEIGHT` | `900` | Virtual display height |
-| `SCREEN_DEPTH` | `24` | Virtual display color depth |
-| `NOVNC_HOST_PORT` | `6080` | Host-loopback noVNC port in `local.yaml` |
-| `CDP_HOST_PORT` | `9222` | Host-loopback CDP port in `local.yaml` |
-| `CHROME_START_URL` | `about:blank` | Initial page |
-| `CHROME_EXTRA_ARGS` | empty | Additional whitespace-separated Chrome flags |
-| `CHROME_DISABLE_SANDBOX` | `0` | Explicitly add `--no-sandbox` when set to `1` |
-| `CHROME_ALLOW_SANDBOX_FALLBACK` | `0` | Base/runtime permission to retry only after the known namespace failure |
-| `LOCAL_CHROME_ALLOW_SANDBOX_FALLBACK` | `1` | `local.yaml` override that arms the narrow fallback for Docker Desktop/emulation |
-| `VNC_PASSWORD` | empty | Optional legacy VNC password |
-
-Internal ports can also be changed when running the image directly: `NOVNC_PORT`, `VNC_PORT`, `CDP_PORT`, and `CHROME_INTERNAL_CDP_PORT`.
-
-## Resource notes
-
-Chrome is memory hungry. The supplied Compose file allocates a 2 GiB shared-memory segment because a tiny Docker `/dev/shm` is a common source of browser instability.
-
-The first implementation targets `linux/amd64`, matching the Google Chrome APT repository and the Dockerfile architecture guard. `compose.yaml` therefore declares `linux/amd64` explicitly so Apple-Silicon hosts do not accidentally build the Debian arm64 base and fail at that guard. Add native arm64 only after its browser distribution path is verified and exercised in CI.
-
-## Build and verify
-
-Build:
-
-```bash
-docker build --platform=linux/amd64 -t uklok/browser:local .
-```
-
-Run directly:
-
-```bash
-docker run -d \
-  --name uklok-browser-smoke \
-  --platform linux/amd64 \
-  --shm-size=2g \
-  -p 127.0.0.1:6080:6080 \
-  -p 127.0.0.1:9222:9222 \
-  -v uklok-browser-profile:/data/chrome \
-  uklok/browser:local
-```
-
-Wait for health and run the smoke contract. A running container can still be unhealthy if Chrome itself failed; inspect health output instead of treating the noVNC page alone as proof that Chrome is alive:
-
-```bash
-docker inspect --format '{{.State.Health.Status}}' uklok-browser-smoke
-docker inspect --format '{{range .State.Health.Log}}{{.Output}}{{end}}' uklok-browser-smoke
-./tests/smoke.sh uklok-browser-smoke
-```
-
-The smoke test verifies that:
-
-- CDP reports Google Chrome;
-- noVNC serves its client;
-- Xvfb is alive;
-- the Chrome process is not launched with `--headless`;
-- the persistent profile directory exists and is writable.
-
-GitHub Actions runs build-and-smoke validation only for pull requests that change browser/runtime, Compose, test, or workflow inputs. A separate publish workflow runs only when image-producing inputs (`Dockerfile`, `.dockerignore`, `scripts/**`, or `supervisord.conf`) reach `main`, or when a semantic version tag is pushed. Documentation-only changes therefore neither rebuild nor republish the image.
-
-## Operational boundaries
-
-- CDP is equivalent to browser control. Anyone who can reach it can navigate, execute JavaScript, read pages, and act with the browser's authenticated sessions.
-- noVNC gives equivalent human keyboard/mouse control.
-- Keep `/data/chrome` access scoped to the workload that owns this browser identity.
-- Never share one user-data-dir between host Chrome and container Chrome.
-- A bind-mounted profile is a Linux-container identity, not a cross-platform clone of a macOS/Windows login session.
-- Container isolation is not a substitute for account-level MFA, least privilege, or secret handling.
-
-## Development governance
-
-UKLOK's working contract lives at:
+Organization working rules are anchored by the UKLOK agent entrypoint:
 
 <https://github.com/uklok/ai-exchange/blob/main/AGENTS.md>
 
-It is linked rather than copied here so this repository does not become a second owner of organization-wide working rules. Changes should flow through an issue, a feature branch, and a reviewable pull request.
+Repository-specific agent guidance lives in [AGENTS.md](AGENTS.md).
