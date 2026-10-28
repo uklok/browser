@@ -1,0 +1,26 @@
+services:
+  browser:
+    image: "${BROWSER_IMAGE:-ghcr.io/uklok/browser:edge}"
+    platform: "${BROWSER_PLATFORM:-linux/amd64}"
+    shm_size: 2gb
+    restart: unless-stopped
+    expose:
+      - "6080"
+      - "9222"
+    environment:
+      SCREEN_WIDTH: "${SCREEN_WIDTH:-1440}"
+      SCREEN_HEIGHT: "${SCREEN_HEIGHT:-900}"
+      SCREEN_DEPTH: "${SCREEN_DEPTH:-24}"
+      CHROME_START_URL: "${CHROME_START_URL:-about:blank}"
+      CHROME_EXTRA_ARGS: "${CHROME_EXTRA_ARGS:-}"
+      CHROME_DISABLE_SANDBOX: "${CHROME_DISABLE_SANDBOX:-0}"
+      CHROME_ALLOW_SANDBOX_FALLBACK: "${CHROME_ALLOW_SANDBOX_FALLBACK:-0}"
+      CHROME_REQUIRE_PROFILE_MARKER: "${CHROME_REQUIRE_PROFILE_MARKER:-0}"
+      CHROME_ADOPT_EXISTING_PROFILE: "${CHROME_ADOPT_EXISTING_PROFILE:-0}"
+      CHROME_CLEAR_STALE_SINGLETONS: "${CHROME_CLEAR_STALE_SINGLETONS:-1}"
+      VNC_PASSWORD: "${VNC_PASSWORD:-}"
+    volumes:
+      - chrome-profile:/data/chrome
+
+volumes:
+  chrome-profile:

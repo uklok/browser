@@ -1,0 +1,9 @@
+services:
+  browser:
+    environment:
+      CHROME_REQUIRE_PROFILE_MARKER: "1"
+      CHROME_ADOPT_EXISTING_PROFILE: "${BROWSER_PROFILE_ADOPT_EXISTING:-0}"
+    volumes:
+      - type: bind
+        source: "${BROWSER_PROFILE_PATH:-${HOME}/.uklok-browser/chrome-profile}"
+        target: /data/chrome
