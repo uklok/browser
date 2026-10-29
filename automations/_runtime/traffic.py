@@ -112,7 +112,11 @@ class CDPTrafficRecorder:
                 target = params.get("targetInfo") or {}
                 target_id = target.get("targetId")
                 if session_id and target.get("type") == "page":
-                    if target_id and target_id not in self.target_to_session:
+                    existing = self.target_to_session.get(target_id) if target_id else None
+                    if existing and existing != session_id:
+                        self._spawn(self.send("Target.detachFromTarget", {"sessionId": session_id}))
+                        continue
+                    if target_id:
                         self.target_to_session[target_id] = session_id
                     self.session_to_target[session_id] = target
                     self._spawn(self.enable_network(session_id))
@@ -164,7 +168,7 @@ async def record(cdp_url: str, output: Path, ready_file: Path) -> None:
         except NotImplementedError:
             pass
 
-    timeout = aiohttp.ClientTimeout(total=5)
+    timeout = aiohttp.ClientTimeout(total=None, connect=5, sock_connect=5)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(version_url) as response:
             response.raise_for_status()
