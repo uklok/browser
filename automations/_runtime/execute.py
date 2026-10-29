@@ -104,6 +104,7 @@ def _failure(
         "module": str(Path(payload["module_path"]).relative_to(payload["root"])),
         "function": f"step_{step_id}",
         "inputs": payload["recorded_inputs"],
+        "traffic": payload.get("traffic"),
         "agent_entrypoint": failure_policy.get("agent_skill", ".agents/skills/browser-automation/SKILL.md"),
         "repair_scope": {
             "start_here": [
@@ -232,6 +233,7 @@ def execute_from_env(browser: dict[str, Any]) -> None:
         "completed_at": _now(),
         "completed_checkpoints": completed,
         "success_condition": contract["success"]["condition"],
+        "traffic": payload.get("traffic"),
     }
     _write_json(run_dir / "result.json", result)
     _write_json(
