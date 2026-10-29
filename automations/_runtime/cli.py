@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -308,7 +309,60 @@ def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
-def _run(name: str, pairs: list[str], from_step: str | None) -> int:
+def _traffic_capture_start(run_dir: Path) -> tuple[subprocess.Popen[str], Any, Path]:
+    cdp_url = os.environ.get("BU_CDP_URL") or f"http://127.0.0.1:{os.environ.get('CDP_HOST_PORT', '9222')}"
+    traffic_path = run_dir / "traffic.jsonl"
+    ready_path = run_dir / "traffic.ready"
+    log_path = run_dir / "traffic-capture.log"
+    log_handle = log_path.open("w", encoding="utf-8")
+
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(AUTOMATIONS / "_runtime" / "traffic.py"),
+            "--cdp-url",
+            cdp_url,
+            "--output",
+            str(traffic_path),
+            "--ready-file",
+            str(ready_path),
+        ],
+        cwd=ROOT,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    for _ in range(50):
+        if ready_path.exists():
+            return process, log_handle, traffic_path
+        if process.poll() is not None:
+            break
+        time.sleep(0.1)
+
+    if process.poll() is None:
+        process.terminate()
+        process.wait(timeout=2)
+    log_handle.close()
+
+    detail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:] if log_path.exists() else ""
+    raise ContractError(f"traffic capture failed to start against {cdp_url}: {detail.strip()}")
+
+
+def _traffic_capture_stop(process: subprocess.Popen[str], log_handle: Any) -> bool:
+    stopped_early = process.poll() is not None
+    if not stopped_early:
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+    log_handle.close()
+    return stopped_early
+
+
+def _run(name: str, pairs: list[str], from_step: str | None, capture_traffic: bool) -> int:
     summary = validate(name)
     contract_path, contract = _load_contract(name)
     if contract.get("status") != "ready":
@@ -339,6 +393,8 @@ def _run(name: str, pairs: list[str], from_step: str | None) -> int:
         "module": str(module_path.relative_to(ROOT)),
         "module_sha256": _sha256(module_path),
         "from_step": from_step,
+        "capture_traffic": capture_traffic,
+        "traffic": str((run_dir / "traffic.jsonl").relative_to(ROOT)) if capture_traffic else None,
         "inputs": recorded_inputs,
     }
     _json_dump(run_dir / "run.json", manifest)
@@ -352,6 +408,8 @@ def _run(name: str, pairs: list[str], from_step: str | None) -> int:
         "inputs": inputs,
         "recorded_inputs": recorded_inputs,
         "from_step": from_step,
+        "capture_traffic": capture_traffic,
+        "traffic": str((run_dir / "traffic.jsonl").relative_to(ROOT)) if capture_traffic else None,
     }
 
     env = os.environ.copy()
@@ -366,19 +424,41 @@ def _run(name: str, pairs: list[str], from_step: str | None) -> int:
     with lock_path.open("a+") as lock:
         print(f"Waiting for shared browser lane: {name}")
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        proc = subprocess.run(
-            [str(ROOT / "bin" / "browser-use")],
-            input=source,
-            text=True,
-            cwd=ROOT,
-            env=env,
-            capture_output=True,
-        )
+        traffic_process = None
+        traffic_log = None
+        traffic_died_early = False
+        try:
+            if capture_traffic:
+                traffic_process, traffic_log, _ = _traffic_capture_start(run_dir)
+                print(f"Capturing raw Network.* CDP events: {run_dir.relative_to(ROOT)}/traffic.jsonl")
+
+            proc = subprocess.run(
+                [str(ROOT / "bin" / "browser-use")],
+                input=source,
+                text=True,
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+            )
+
+            if traffic_process is not None:
+                traffic_died_early = traffic_process.poll() is not None
+        finally:
+            if traffic_process is not None and traffic_log is not None:
+                _traffic_capture_stop(traffic_process, traffic_log)
 
     if proc.stdout:
         print(proc.stdout, end="")
     if proc.stderr:
         print(proc.stderr, end="", file=sys.stderr)
+
+    if capture_traffic and traffic_died_early and proc.returncode == 0:
+        proc = subprocess.CompletedProcess(
+            proc.args,
+            1,
+            proc.stdout,
+            proc.stderr + "\nTraffic capture stopped before automation completion.",
+        )
 
     manifest["ended_at"] = _utc_now()
     manifest["status"] = "succeeded" if proc.returncode == 0 else "failed"
@@ -401,6 +481,7 @@ def _run(name: str, pairs: list[str], from_step: str | None) -> int:
                 "contract": str(contract_path.relative_to(ROOT)),
                 "module": str(module_path.relative_to(ROOT)),
                 "stderr_tail": proc.stderr[-4000:],
+                "traffic": manifest.get("traffic"),
                 "agent_entrypoint": ".agents/skills/browser-automation/SKILL.md",
             },
         )
@@ -428,6 +509,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("name")
     run_parser.add_argument("--input", action="append", default=[], metavar="KEY=VALUE")
     run_parser.add_argument("--from", dest="from_step", metavar="CHECKPOINT")
+    run_parser.add_argument(
+        "--capture-traffic",
+        action="store_true",
+        help="Record raw Chrome Network.* CDP events to this run's traffic.jsonl",
+    )
 
     return parser
 
@@ -442,7 +528,7 @@ def main() -> int:
         if args.command == "new":
             return new_automation(args.name)
         if args.command == "run":
-            return _run(args.name, args.input, args.from_step)
+            return _run(args.name, args.input, args.from_step, args.capture_traffic)
     except ContractError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
