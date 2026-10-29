@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-requirements="${root}/requirements-browser-use.txt"
+root="$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)"
+venv="\${root}/.venv"
+cli="\${venv}/bin/browser-use"
 
-if ! command -v uv >/dev/null 2>&1; then
-  echo "ERROR: uv is required. Install it from https://docs.astral.sh/uv/getting-started/installation/" >&2
+if [[ ! -x "\${cli}" ]]; then
+  echo "ERROR: repo-local Browser Use environment is not ready." >&2
+  echo "Run: \${root}/bin/browser-use-setup" >&2
   exit 1
 fi
 
-spec="$(grep -Ev '^[[:space:]]*(#|$)' "${requirements}" | head -n 1)"
-if [[ -z "${spec}" ]]; then
-  echo "ERROR: no Browser Use package spec found in ${requirements}" >&2
-  exit 1
-fi
+export PATH="\${venv}/bin:\${PATH}"
+export BU_CDP_URL="\${BU_CDP_URL:-http://127.0.0.1:\${CDP_HOST_PORT:-9222}}"
+export BH_TAB_MARKER="\${BH_TAB_MARKER:-0}"
 
-export BU_CDP_URL="${BU_CDP_URL:-http://127.0.0.1:${CDP_HOST_PORT:-9222}}"
-export BH_TAB_MARKER="${BH_TAB_MARKER:-0}"
-
-exec uv tool run --isolated --python 3.12 --from "${spec}" browser-use "$@"
+exec "\${cli}" "$@"

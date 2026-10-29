@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-skill_dir="${root}/.agents/skills/browser-use"
+root="$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)"
+venv="\${root}/.venv"
+venv_python="\${venv}/bin/python"
+requirements="\${root}/requirements-browser-use.txt"
+skill_dir="\${root}/.agents/skills/browser-use"
 
 if ! command -v uv >/dev/null 2>&1; then
   cat >&2 <<'EOF'
@@ -17,16 +20,30 @@ EOF
   exit 1
 fi
 
-echo "Resolving pinned Browser Use CLI..."
-"${root}/bin/browser-use" --version
+if [[ ! -x "\${venv_python}" ]]; then
+  echo "Creating repo-local Python 3.12 environment at .venv ..."
+  uv venv --python 3.12 "\${venv}"
+fi
 
-echo "Installing upstream Browser Use skill into the repo-local skill directory..."
-"${root}/bin/browser-use" skill install   --no-install   --path "${skill_dir}"
+echo "Installing pinned Browser Use capability into .venv ..."
+uv pip install --python "\${venv_python}" --requirements "\${requirements}"
+
+echo "Verifying pinned Browser Use CLI ..."
+"\${root}/bin/browser-use" --version
+
+echo "Materializing the upstream Browser Use skill from the same .venv ..."
+"\${root}/bin/browser-use" skill install \
+  --no-install \
+  --path "\${skill_dir}"
+
+echo "Validating tracked automation contracts ..."
+"\${root}/bin/browser-automation" validate
 
 echo
 echo "Browser Use Phase A setup complete."
-echo "  skill: ${skill_dir}/SKILL.md"
-echo "  CDP default: http://127.0.0.1:${CDP_HOST_PORT:-9222}"
+echo "  environment: \${venv}"
+echo "  skill:       \${skill_dir}/SKILL.md"
+echo "  CDP default: http://127.0.0.1:\${CDP_HOST_PORT:-9222}"
 echo
 echo "Next:"
-echo "  ${root}/bin/browser-use-doctor"
+echo "  \${root}/bin/browser-use-doctor"
