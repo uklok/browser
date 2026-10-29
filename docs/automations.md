@@ -167,6 +167,24 @@ The runner acquires the single shared browser-lane lock, then feeds the determin
 
 No LLM/agent is loaded.
 
+### Optional raw traffic capture
+
+When a failure may depend on backend/API behavior, enable an independent Chrome CDP observer:
+
+~~~bash
+./bin/browser-automation run example_read_page --capture-traffic
+~~~
+
+The run then contains:
+
+~~~text
+.runs/<automation>/<run-id>/traffic.jsonl
+~~~
+
+Each line preserves one raw Chrome `Network.*` CDP event under a `cdp` field, plus capture time and target metadata. The recorder uses its own browser-level CDP connection; it does **not** drain Browser Harness's event buffer and therefore does not steal network events from automation helpers.
+
+This is protocol-event capture, not packet capture: response bodies are not fetched separately. Chrome events can still contain request/response headers, cookies and request post data. Treat `traffic.jsonl` as sensitive browser-session evidence. It stays under gitignored `.runs/` and should only be enabled when it changes diagnosis or proof.
+
 ## Checkpoints
 
 Before each step the runtime writes local state. After a passing step it writes an event containing the observed evidence.
@@ -193,6 +211,7 @@ Failures live under `.runs/`, which is intentionally gitignored.
 - exception when one occurred;
 - current browser/tab/page information when available;
 - screenshot path when capture succeeds;
+- `traffic.jsonl` path when the run used `--capture-traffic`;
 - contract and module paths;
 - exact `step_<id>()` function;
 - safe restart/resume instruction;
