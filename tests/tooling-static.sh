@@ -33,3 +33,5 @@ for path in sorted((root / 'automations').rglob('contract.toml')):
     tomllib.loads(path.read_text(encoding='utf-8'))
 print('tooling static validation passed')
 PY
+
+python3 automations/_runtime/cli.py run --help | grep -q -- '--capture-traffic'
