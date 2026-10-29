@@ -43,11 +43,11 @@ Then:
 
 The setup command:
 
-1. resolves the Browser Use version pinned in `requirements-browser-use.txt`;
-2. warms uv's isolated tool cache;
-3. asks Browser Use itself to materialize its upstream skill at:
-   `.agents/skills/browser-use/SKILL.md`;
-4. leaves that generated skill untracked so upstream remains its content owner.
+1. creates a repo-local Python 3.12 `.venv` when needed;
+2. installs the Browser Use version pinned in `requirements-browser-use.txt` into that shared environment;
+3. asks that same pinned environment to materialize its upstream skill at `.agents/skills/browser-use/SKILL.md`;
+4. validates tracked automation contracts;
+5. leaves `.venv` and the generated upstream skill untracked.
 
 No separate `browser-harness` dependency is installed by UKLOK. The pinned Browser Use package owns the compatible harness dependency.
 
@@ -73,7 +73,7 @@ The doctor is intentionally non-mutating: it lists attached tabs rather than nav
 
 ## Use the CLI
 
-`./bin/browser-use` is a thin adapter. It preserves the upstream CLI and only supplies the UKLOK connection default:
+`./bin/browser-use` is a thin adapter over `.venv/bin/browser-use`. Humans, agents, sandboxes and deterministic automations therefore share the same pinned package environment. The adapter preserves the upstream CLI and supplies the UKLOK connection default:
 
 ```text
 BU_CDP_URL=http://127.0.0.1:9222
@@ -155,6 +155,12 @@ The MCP adapter exposes Browser Use's programmable browser execution and screens
 
 Do not add a second MCP/browser stack merely because MCP is available.
 
+## From exploration to automation
+
+Use direct Browser Use + its skill while discovering or repairing browser behavior. Once behavior is understood and repeated, encode it as a [contract-first browser automation](automations.md).
+
+The normal automation path is deterministic and does not load an agent. A failed checkpoint emits a narrow `failure.json`; that artifact is the repair entrypoint for the `browser-automation` skill.
+
 ## Operational model
 
 Treat one persistent UKLOK Chrome identity as **one interactive browser lane**.
@@ -217,7 +223,9 @@ Included:
 - upstream Browser Use skill;
 - direct attachment to UKLOK Chrome through CDP;
 - CLI and optional MCP adapter;
-- setup + doctor + agent navigation.
+- repo-local shared `.venv`;
+- setup + doctor + agent navigation;
+- deterministic contract-first automation knowledge/repair layer.
 
 Not included yet:
 
