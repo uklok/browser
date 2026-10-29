@@ -429,7 +429,28 @@ def _run(name: str, pairs: list[str], from_step: str | None, capture_traffic: bo
         traffic_died_early = False
         try:
             if capture_traffic:
-                traffic_process, traffic_log, _ = _traffic_capture_start(run_dir)
+                try:
+                    traffic_process, traffic_log, _ = _traffic_capture_start(run_dir)
+                except ContractError as exc:
+                    manifest["ended_at"] = _utc_now()
+                    manifest["status"] = "failed"
+                    _json_dump(run_dir / "run.json", manifest)
+                    _json_dump(
+                        run_dir / "failure.json",
+                        {
+                            "schema": "uklok.browser.automation-failure/v1",
+                            "automation": name,
+                            "run_id": run_id,
+                            "type": "traffic_capture",
+                            "checkpoint": None,
+                            "contract": str(contract_path.relative_to(ROOT)),
+                            "module": str(module_path.relative_to(ROOT)),
+                            "traffic": manifest.get("traffic"),
+                            "error": str(exc),
+                            "agent_entrypoint": ".agents/skills/browser-automation/SKILL.md",
+                        },
+                    )
+                    raise
                 print(f"Capturing raw Network.* CDP events: {run_dir.relative_to(ROOT)}/traffic.jsonl")
 
             proc = subprocess.run(
