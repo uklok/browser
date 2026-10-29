@@ -65,7 +65,7 @@ Do not “fix” a substrate failure with selector logic or an authority boundar
 ## Repair loop
 
 1. Reproduce or inspect the failed checkpoint with `./bin/browser-use`; preserve the human's current browser state.
-2. Compare **expected** vs **observed** from `failure.json`.
+2. Compare **expected** vs **observed** from `failure.json`. If it references `traffic.jsonl`, inspect only the network slice relevant to the failed checkpoint before broad browser exploration.
 3. If browser/site behavior changed, update the failed contract step first:
    - `pseudocode`;
    - `checkpoint`;
@@ -126,6 +126,8 @@ A checkpoint failure stops later steps.
 Inputs may be marked `sensitive = true`.
 
 The runtime passes their real values to the module but records `<redacted>` in durable run/failure metadata. Prefer the authenticated Chrome profile over passing credentials as automation inputs.
+
+`--capture-traffic` is diagnostic evidence, not a default. Its `traffic.jsonl` can contain headers, cookies and request post data; keep it local under `.runs/` and enable it only when network behavior materially helps proof or repair.
 
 ## One interactive lane
 
