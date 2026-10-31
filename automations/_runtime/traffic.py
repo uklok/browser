@@ -5,10 +5,14 @@ import asyncio
 import datetime as dt
 import json
 import signal
+import time
 from pathlib import Path
 from typing import Any
 
 import aiohttp
+
+
+STATE_SCHEMA = "uklok.browser.traffic-state/v1"
 
 
 def _now() -> str:
@@ -16,21 +20,64 @@ def _now() -> str:
 
 
 class CDPTrafficRecorder:
-    def __init__(self, ws: aiohttp.ClientWebSocketResponse, output: Path):
+    def __init__(self, ws: aiohttp.ClientWebSocketResponse, output: Path, state_file: Path):
         self.ws = ws
         self.output = output
+        self.state_file = state_file
         self.next_id = 0
+        self.sequence = 0
+        self.lifecycle_seq = 0
         self.pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self.target_to_session: dict[str, str] = {}
         self.session_to_target: dict[str, dict[str, Any]] = {}
         self.attaching: set[str] = set()
         self.tasks: set[asyncio.Task[Any]] = set()
+        self.active_requests: dict[str, dict[str, Any]] = {}
+        self.open_streams: dict[str, dict[str, Any]] = {}
+        self.counters = {
+            "started": 0,
+            "finished": 0,
+            "failed": 0,
+            "http_error": 0,
+            "redirected": 0,
+        }
         self.handle = output.open("w", encoding="utf-8", buffering=1)
 
     def _spawn(self, coro: Any) -> None:
         task = asyncio.create_task(coro)
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
+
+    @staticmethod
+    def _request_key(session_id: str | None, request_id: str | None) -> str:
+        return f"{session_id or 'browser'}:{request_id or 'unknown'}"
+
+    def _write_state(self) -> None:
+        payload = {
+            "schema": STATE_SCHEMA,
+            "updated_at": _now(),
+            "latest_seq": self.sequence,
+            "lifecycle_seq": self.lifecycle_seq,
+            "counters": dict(self.counters),
+            "active_requests": list(self.active_requests.values()),
+            "open_streams": list(self.open_streams.values()),
+        }
+        tmp = self.state_file.with_name(self.state_file.name + ".tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        tmp.replace(self.state_file)
+
+    def _drop_session(self, session_id: str) -> None:
+        request_prefix = f"{session_id}:"
+        removed = False
+        for key in [key for key in self.active_requests if key.startswith(request_prefix)]:
+            self.active_requests.pop(key, None)
+            removed = True
+        for key in [key for key in self.open_streams if key.startswith(request_prefix)]:
+            self.open_streams.pop(key, None)
+            removed = True
+        if removed:
+            self.lifecycle_seq += 1
+            self._write_state()
 
     async def send(
         self,
@@ -76,14 +123,103 @@ class CDPTrafficRecorder:
         finally:
             self.attaching.discard(target_id)
 
+    def _observe_network_state(self, raw: dict[str, Any]) -> None:
+        method = raw.get("method", "")
+        params = raw.get("params") or {}
+        session_id = raw.get("sessionId")
+        request_id = params.get("requestId")
+        key = self._request_key(session_id, request_id)
+        now = time.time()
+
+        if method == "Network.requestWillBeSent":
+            request = params.get("request") or {}
+            if key in self.active_requests:
+                self.counters["redirected"] += 1
+            self.counters["started"] += 1
+            self.lifecycle_seq += 1
+            self.active_requests[key] = {
+                "key": key,
+                "session_id": session_id,
+                "request_id": request_id,
+                "url": request.get("url"),
+                "method": request.get("method"),
+                "type": params.get("type") or "Other",
+                "started_at": now,
+                "response_status": None,
+            }
+            return
+
+        if method == "Network.responseReceived":
+            active = self.active_requests.get(key)
+            if active is not None:
+                status = (params.get("response") or {}).get("status")
+                active["response_status"] = status
+                if isinstance(status, (int, float)) and status >= 400 and not active.get("http_error_counted"):
+                    active["http_error_counted"] = True
+                    self.counters["http_error"] += 1
+            return
+
+        if method == "Network.loadingFinished":
+            self.active_requests.pop(key, None)
+            self.counters["finished"] += 1
+            self.lifecycle_seq += 1
+            return
+
+        if method == "Network.loadingFailed":
+            self.active_requests.pop(key, None)
+            self.counters["failed"] += 1
+            self.lifecycle_seq += 1
+            return
+
+        if method == "Network.webSocketCreated":
+            self.lifecycle_seq += 1
+            self.open_streams[key] = {
+                "key": key,
+                "session_id": session_id,
+                "request_id": request_id,
+                "url": params.get("url"),
+                "type": "WebSocket",
+                "started_at": now,
+            }
+            return
+
+        if method == "Network.webSocketClosed":
+            self.open_streams.pop(key, None)
+            self.lifecycle_seq += 1
+            return
+
+        if method == "Network.webTransportCreated":
+            transport_id = params.get("transportId")
+            transport_key = self._request_key(session_id, transport_id)
+            self.lifecycle_seq += 1
+            self.open_streams[transport_key] = {
+                "key": transport_key,
+                "session_id": session_id,
+                "request_id": transport_id,
+                "url": params.get("url"),
+                "type": "WebTransport",
+                "started_at": now,
+            }
+            return
+
+        if method == "Network.webTransportClosed":
+            transport_id = params.get("transportId")
+            transport_key = self._request_key(session_id, transport_id)
+            self.open_streams.pop(transport_key, None)
+            self.lifecycle_seq += 1
+
     def emit(self, raw: dict[str, Any]) -> None:
+        self.sequence += 1
         session_id = raw.get("sessionId")
         envelope = {
+            "seq": self.sequence,
             "captured_at": _now(),
             "target": self.session_to_target.get(session_id),
             "cdp": raw,
         }
         self.handle.write(json.dumps(envelope, separators=(",", ":"), ensure_ascii=False) + "\n")
+        self._observe_network_state(raw)
+        self._write_state()
 
     async def reader(self) -> None:
         async for message in self.ws:
@@ -127,6 +263,8 @@ class CDPTrafficRecorder:
                 target = self.session_to_target.pop(session_id, None)
                 if target and target.get("targetId"):
                     self.target_to_session.pop(target["targetId"], None)
+                if session_id:
+                    self._drop_session(session_id)
                 continue
 
             if method.startswith("Network."):
@@ -149,6 +287,7 @@ class CDPTrafficRecorder:
             "Target.setAutoAttach",
             {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
         )
+        self._write_state()
 
     async def close(self) -> None:
         await self.ws.close()
@@ -157,7 +296,7 @@ class CDPTrafficRecorder:
         self.handle.close()
 
 
-async def record(cdp_url: str, output: Path, ready_file: Path) -> None:
+async def record(cdp_url: str, output: Path, state_file: Path, ready_file: Path) -> None:
     version_url = cdp_url.rstrip("/") + "/json/version"
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -179,7 +318,7 @@ async def record(cdp_url: str, output: Path, ready_file: Path) -> None:
             raise RuntimeError(f"CDP endpoint did not expose webSocketDebuggerUrl: {version_url}")
 
         async with session.ws_connect(ws_url, heartbeat=20) as ws:
-            recorder = CDPTrafficRecorder(ws, output)
+            recorder = CDPTrafficRecorder(ws, output, state_file)
             reader = asyncio.create_task(recorder.reader())
             try:
                 await recorder.setup()
@@ -205,11 +344,13 @@ def main() -> int:
     )
     parser.add_argument("--cdp-url", required=True)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--state-file", required=True, type=Path)
     parser.add_argument("--ready-file", required=True, type=Path)
     args = parser.parse_args()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    asyncio.run(record(args.cdp_url, args.output, args.ready_file))
+    args.state_file.parent.mkdir(parents=True, exist_ok=True)
+    asyncio.run(record(args.cdp_url, args.output, args.state_file, args.ready_file))
     return 0
 
 
