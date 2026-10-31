@@ -309,9 +309,10 @@ def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
-def _traffic_capture_start(run_dir: Path) -> tuple[subprocess.Popen[str], Any, Path]:
+def _traffic_capture_start(run_dir: Path) -> tuple[subprocess.Popen[str], Any, Path, Path]:
     cdp_url = os.environ.get("BU_CDP_URL") or f"http://127.0.0.1:{os.environ.get('CDP_HOST_PORT', '9222')}"
     traffic_path = run_dir / "traffic.jsonl"
+    state_path = run_dir / "traffic-state.json"
     ready_path = run_dir / "traffic.ready"
     log_path = run_dir / "traffic-capture.log"
     log_handle = log_path.open("w", encoding="utf-8")
@@ -324,6 +325,8 @@ def _traffic_capture_start(run_dir: Path) -> tuple[subprocess.Popen[str], Any, P
             cdp_url,
             "--output",
             str(traffic_path),
+            "--state-file",
+            str(state_path),
             "--ready-file",
             str(ready_path),
         ],
@@ -335,7 +338,7 @@ def _traffic_capture_start(run_dir: Path) -> tuple[subprocess.Popen[str], Any, P
 
     for _ in range(50):
         if ready_path.exists():
-            return process, log_handle, traffic_path
+            return process, log_handle, traffic_path, state_path
         if process.poll() is not None:
             break
         time.sleep(0.1)
@@ -395,6 +398,9 @@ def _run(name: str, pairs: list[str], from_step: str | None, capture_traffic: bo
         "from_step": from_step,
         "capture_traffic": capture_traffic,
         "traffic": str((run_dir / "traffic.jsonl").relative_to(ROOT)) if capture_traffic else None,
+        "traffic_state": str((run_dir / "traffic-state.json").relative_to(ROOT)) if capture_traffic else None,
+        "traffic_checkpoints": str((run_dir / "traffic-checkpoints.jsonl").relative_to(ROOT)) if capture_traffic else None,
+        "traffic_observability": {"requested": capture_traffic, "status": "pending" if capture_traffic else "disabled"},
         "inputs": recorded_inputs,
     }
     _json_dump(run_dir / "run.json", manifest)
@@ -410,6 +416,8 @@ def _run(name: str, pairs: list[str], from_step: str | None, capture_traffic: bo
         "from_step": from_step,
         "capture_traffic": capture_traffic,
         "traffic": str((run_dir / "traffic.jsonl").relative_to(ROOT)) if capture_traffic else None,
+        "traffic_state": str(run_dir / "traffic-state.json") if capture_traffic else None,
+        "traffic_checkpoints": str(run_dir / "traffic-checkpoints.jsonl") if capture_traffic else None,
     }
 
     env = os.environ.copy()
@@ -430,28 +438,19 @@ def _run(name: str, pairs: list[str], from_step: str | None, capture_traffic: bo
         try:
             if capture_traffic:
                 try:
-                    traffic_process, traffic_log, _ = _traffic_capture_start(run_dir)
+                    traffic_process, traffic_log, _, _ = _traffic_capture_start(run_dir)
                 except ContractError as exc:
-                    manifest["ended_at"] = _utc_now()
-                    manifest["status"] = "failed"
+                    manifest["traffic_observability"] = {
+                        "requested": True,
+                        "status": "unavailable",
+                        "error": str(exc),
+                    }
                     _json_dump(run_dir / "run.json", manifest)
-                    _json_dump(
-                        run_dir / "failure.json",
-                        {
-                            "schema": "uklok.browser.automation-failure/v1",
-                            "automation": name,
-                            "run_id": run_id,
-                            "type": "traffic_capture",
-                            "checkpoint": None,
-                            "contract": str(contract_path.relative_to(ROOT)),
-                            "module": str(module_path.relative_to(ROOT)),
-                            "traffic": manifest.get("traffic"),
-                            "error": str(exc),
-                            "agent_entrypoint": ".agents/skills/browser-automation/SKILL.md",
-                        },
-                    )
-                    raise
-                print(f"Capturing raw Network.* CDP events: {run_dir.relative_to(ROOT)}/traffic.jsonl")
+                    print(f"WARNING: traffic capture unavailable: {exc}", file=sys.stderr)
+                else:
+                    manifest["traffic_observability"] = {"requested": True, "status": "active"}
+                    _json_dump(run_dir / "run.json", manifest)
+                    print(f"Capturing raw Network.* CDP events: {run_dir.relative_to(ROOT)}/traffic.jsonl")
 
             proc = subprocess.run(
                 [str(ROOT / "bin" / "browser-use")],
@@ -473,13 +472,18 @@ def _run(name: str, pairs: list[str], from_step: str | None, capture_traffic: bo
     if proc.stderr:
         print(proc.stderr, end="", file=sys.stderr)
 
-    if capture_traffic and traffic_died_early and proc.returncode == 0:
-        proc = subprocess.CompletedProcess(
-            proc.args,
-            1,
-            proc.stdout,
-            proc.stderr + "\nTraffic capture stopped before automation completion.",
-        )
+    if capture_traffic:
+        if traffic_process is None:
+            manifest["traffic_observability"].setdefault("status", "unavailable")
+        elif traffic_died_early:
+            manifest["traffic_observability"] = {
+                "requested": True,
+                "status": "degraded",
+                "error": "traffic recorder stopped before automation completion",
+            }
+            print("WARNING: traffic recorder stopped before automation completion", file=sys.stderr)
+        else:
+            manifest["traffic_observability"] = {"requested": True, "status": "complete"}
 
     manifest["ended_at"] = _utc_now()
     manifest["status"] = "succeeded" if proc.returncode == 0 else "failed"
@@ -503,6 +507,8 @@ def _run(name: str, pairs: list[str], from_step: str | None, capture_traffic: bo
                 "module": str(module_path.relative_to(ROOT)),
                 "stderr_tail": proc.stderr[-4000:],
                 "traffic": manifest.get("traffic"),
+                "traffic_checkpoints": manifest.get("traffic_checkpoints"),
+                "traffic_observability": manifest.get("traffic_observability"),
                 "agent_entrypoint": ".agents/skills/browser-automation/SKILL.md",
             },
         )

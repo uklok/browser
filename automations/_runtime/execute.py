@@ -3,10 +3,20 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import time
 import tomllib
 import traceback
 from pathlib import Path
 from typing import Any
+
+
+TRAFFIC_POLICY = {
+    "quiet_seconds": 0.75,
+    "max_wait_seconds": 10.0,
+    "stale_after_seconds": 30.0,
+    "poll_seconds": 0.1,
+}
+PERSISTENT_RESOURCE_TYPES = {"EventSource"}
 
 
 def _now() -> str:
@@ -69,6 +79,208 @@ def _load_module(module_path: Path, browser: dict[str, Any], ctx: dict[str, Any]
     return namespace
 
 
+def _read_traffic_state(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")), None
+    except FileNotFoundError:
+        return None, f"traffic state is unavailable: {path}"
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, f"traffic state could not be read: {exc}"
+
+
+def _traffic_item(value: dict[str, Any], now_epoch: float) -> dict[str, Any]:
+    started_at = value.get("started_at")
+    age_seconds = max(0.0, now_epoch - started_at) if isinstance(started_at, (int, float)) else None
+    item = {
+        "key": value.get("key"),
+        "request_id": value.get("request_id"),
+        "type": value.get("type"),
+        "method": value.get("method"),
+        "url": value.get("url"),
+        "response_status": value.get("response_status"),
+    }
+    if age_seconds is not None:
+        item["age_ms"] = round(age_seconds * 1000)
+    return item
+
+
+def _classify_traffic_state(
+    state: dict[str, Any],
+    *,
+    now_epoch: float,
+    stale_after_seconds: float,
+) -> dict[str, list[dict[str, Any]]]:
+    blocking: list[dict[str, Any]] = []
+    stale: list[dict[str, Any]] = []
+    persistent: list[dict[str, Any]] = []
+
+    for request in state.get("active_requests", []):
+        item = _traffic_item(request, now_epoch)
+        if request.get("type") in PERSISTENT_RESOURCE_TYPES:
+            persistent.append(item)
+            continue
+
+        started_at = request.get("started_at")
+        age_seconds = max(0.0, now_epoch - started_at) if isinstance(started_at, (int, float)) else 0.0
+        if age_seconds >= stale_after_seconds:
+            stale.append(item)
+        else:
+            blocking.append(item)
+
+    for stream in state.get("open_streams", []):
+        persistent.append(_traffic_item(stream, now_epoch))
+
+    return {
+        "blocking": blocking,
+        "stale": stale,
+        "persistent": persistent,
+    }
+
+
+def _traffic_cursor(payload: dict[str, Any]) -> dict[str, Any]:
+    cursor = {"seq": 0, "counters": {}}
+    if not payload.get("capture_traffic"):
+        return cursor
+
+    state_path = payload.get("traffic_state")
+    if not state_path:
+        return cursor
+
+    state, _ = _read_traffic_state(Path(state_path))
+    if state is None:
+        return cursor
+
+    return {
+        "seq": int(state.get("latest_seq", 0)),
+        "counters": dict(state.get("counters") or {}),
+    }
+
+
+def _counter_delta(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, int]:
+    keys = set(current) | set(previous)
+    delta: dict[str, int] = {}
+    for key in sorted(keys):
+        try:
+            delta[key] = max(0, int(current.get(key, 0)) - int(previous.get(key, 0)))
+        except (TypeError, ValueError):
+            continue
+    return delta
+
+
+def _traffic_boundary(
+    *,
+    payload: dict[str, Any],
+    step: dict[str, Any],
+    step_status: str,
+    cursor: dict[str, Any],
+    policy: dict[str, float] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    if not payload.get("capture_traffic"):
+        return None, cursor
+
+    settings = dict(TRAFFIC_POLICY)
+    if policy:
+        settings.update(policy)
+
+    boundary_path_value = payload.get("traffic_checkpoints")
+    state_path_value = payload.get("traffic_state")
+    if not boundary_path_value or not state_path_value:
+        return None, cursor
+
+    boundary_path = Path(boundary_path_value)
+    state_path = Path(state_path_value)
+    started = time.monotonic()
+    quiet_since: float | None = None
+    last_lifecycle: int | None = None
+    final_state: dict[str, Any] | None = None
+    final_classification = {"blocking": [], "stale": [], "persistent": []}
+    outcome = "unavailable"
+    error: str | None = None
+
+    try:
+        while True:
+            state, state_error = _read_traffic_state(state_path)
+            if state is None:
+                error = state_error
+                outcome = "unavailable"
+                break
+
+            final_state = state
+            now_epoch = time.time()
+            final_classification = _classify_traffic_state(
+                state,
+                now_epoch=now_epoch,
+                stale_after_seconds=settings["stale_after_seconds"],
+            )
+            lifecycle = int(state.get("lifecycle_seq", 0))
+            now_mono = time.monotonic()
+
+            if final_classification["blocking"]:
+                quiet_since = None
+            else:
+                if quiet_since is None or lifecycle != last_lifecycle:
+                    quiet_since = now_mono
+                if now_mono - quiet_since >= settings["quiet_seconds"]:
+                    outcome = (
+                        "quiet_with_carryover"
+                        if final_classification["stale"] or final_classification["persistent"]
+                        else "quiet"
+                    )
+                    break
+
+            if now_mono - started >= settings["max_wait_seconds"]:
+                outcome = "timeout_busy"
+                break
+
+            last_lifecycle = lifecycle
+            time.sleep(settings["poll_seconds"])
+    except Exception as exc:
+        outcome = "error"
+        error = f"{type(exc).__name__}: {exc}"
+
+    current_seq = cursor.get("seq", 0)
+    current_counters: dict[str, Any] = dict(cursor.get("counters") or {})
+    lifecycle_seq = None
+    if final_state is not None:
+        current_seq = int(final_state.get("latest_seq", current_seq))
+        current_counters = dict(final_state.get("counters") or {})
+        lifecycle_seq = int(final_state.get("lifecycle_seq", 0))
+
+    boundary = {
+        "schema": "uklok.browser.traffic-checkpoint/v1",
+        "automation": payload["automation"],
+        "run_id": Path(payload["run_dir"]).name,
+        "step": step["id"],
+        "checkpoint": step["checkpoint"],
+        "step_status": step_status,
+        "at": _now(),
+        "from_seq": int(cursor.get("seq", 0)) + 1,
+        "through_seq": current_seq,
+        "traffic_delta": _counter_delta(current_counters, dict(cursor.get("counters") or {})),
+        "settle": {
+            "outcome": outcome,
+            "waited_ms": round((time.monotonic() - started) * 1000),
+            "quiet_window_ms": round(settings["quiet_seconds"] * 1000),
+            "max_wait_ms": round(settings["max_wait_seconds"] * 1000),
+            "stale_after_ms": round(settings["stale_after_seconds"] * 1000),
+            "lifecycle_seq": lifecycle_seq,
+            "blocking": final_classification["blocking"],
+            "stale": final_classification["stale"],
+            "persistent": final_classification["persistent"],
+            "error": error,
+        },
+    }
+
+    try:
+        boundary_path.parent.mkdir(parents=True, exist_ok=True)
+        _append_event(boundary_path, boundary)
+    except Exception as exc:
+        boundary["settle"]["outcome"] = "error"
+        boundary["settle"]["error"] = f"could not persist traffic boundary: {type(exc).__name__}: {exc}"
+
+    return boundary, {"seq": current_seq, "counters": current_counters}
+
+
 def _failure(
     *,
     payload: dict[str, Any],
@@ -78,6 +290,7 @@ def _failure(
     observed: Any,
     error: str | None,
     browser: dict[str, Any],
+    traffic_boundary: dict[str, Any] | None,
 ) -> Path:
     run_dir = Path(payload["run_dir"])
     failure_policy = contract.get("failure", {})
@@ -105,6 +318,8 @@ def _failure(
         "function": f"step_{step_id}",
         "inputs": payload["recorded_inputs"],
         "traffic": payload.get("traffic"),
+        "traffic_checkpoints": payload.get("traffic_checkpoints"),
+        "traffic_checkpoint": _safe(traffic_boundary),
         "agent_entrypoint": failure_policy.get("agent_skill", ".agents/skills/browser-automation/SKILL.md"),
         "repair_scope": {
             "start_here": [
@@ -157,6 +372,8 @@ def execute_from_env(browser: dict[str, Any]) -> None:
     namespace = _load_module(module_path, browser, ctx)
     events_path = run_dir / "events.ndjson"
     completed: list[str] = []
+    traffic_cursor = _traffic_cursor(payload)
+    traffic_boundaries: list[dict[str, Any]] = []
 
     for step in steps:
         step_id = step["id"]
@@ -179,6 +396,7 @@ def execute_from_env(browser: dict[str, Any]) -> None:
                 "step": step_id,
                 "at": _now(),
                 "checkpoint": step["checkpoint"],
+                "traffic_from_seq": traffic_cursor["seq"] + 1 if payload.get("capture_traffic") else None,
             },
         )
 
@@ -187,6 +405,14 @@ def execute_from_env(browser: dict[str, Any]) -> None:
             result = fn(ctx)
         except Exception:
             error = traceback.format_exc()
+            traffic_boundary, traffic_cursor = _traffic_boundary(
+                payload=payload,
+                step=step,
+                step_status="exception",
+                cursor=traffic_cursor,
+            )
+            if traffic_boundary:
+                traffic_boundaries.append(traffic_boundary)
             path = _failure(
                 payload=payload,
                 contract=contract,
@@ -195,12 +421,30 @@ def execute_from_env(browser: dict[str, Any]) -> None:
                 observed=None,
                 error=error,
                 browser=browser,
+                traffic_boundary=traffic_boundary,
             )
-            _append_event(events_path, {"event": "step_failed", "step": step_id, "at": _now(), "failure": str(path)})
+            _append_event(
+                events_path,
+                {
+                    "event": "step_failed",
+                    "step": step_id,
+                    "at": _now(),
+                    "failure": str(path),
+                    "traffic_boundary": _safe(traffic_boundary),
+                },
+            )
             raise RuntimeError(f"automation failed at {step_id}; handoff: {path}") from None
 
         if not isinstance(result, dict) or result.get("ok") is not True:
             observed = result.get("observed") if isinstance(result, dict) else result
+            traffic_boundary, traffic_cursor = _traffic_boundary(
+                payload=payload,
+                step=step,
+                step_status="checkpoint_failed",
+                cursor=traffic_cursor,
+            )
+            if traffic_boundary:
+                traffic_boundaries.append(traffic_boundary)
             path = _failure(
                 payload=payload,
                 contract=contract,
@@ -209,9 +453,28 @@ def execute_from_env(browser: dict[str, Any]) -> None:
                 observed=observed,
                 error=None,
                 browser=browser,
+                traffic_boundary=traffic_boundary,
             )
-            _append_event(events_path, {"event": "checkpoint_failed", "step": step_id, "at": _now(), "failure": str(path)})
+            _append_event(
+                events_path,
+                {
+                    "event": "checkpoint_failed",
+                    "step": step_id,
+                    "at": _now(),
+                    "failure": str(path),
+                    "traffic_boundary": _safe(traffic_boundary),
+                },
+            )
             raise RuntimeError(f"checkpoint failed at {step_id}; handoff: {path}")
+
+        traffic_boundary, traffic_cursor = _traffic_boundary(
+            payload=payload,
+            step=step,
+            step_status="passed",
+            cursor=traffic_cursor,
+        )
+        if traffic_boundary:
+            traffic_boundaries.append(traffic_boundary)
 
         completed.append(step_id)
         _append_event(
@@ -222,9 +485,11 @@ def execute_from_env(browser: dict[str, Any]) -> None:
                 "at": _now(),
                 "observed": _safe(result.get("observed")),
                 "evidence": _safe(result.get("evidence")),
+                "traffic_boundary": _safe(traffic_boundary),
             },
         )
 
+    degraded_outcomes = {"timeout_busy", "unavailable", "error"}
     result = {
         "schema": "uklok.browser.automation-result/v1",
         "automation": payload["automation"],
@@ -234,6 +499,15 @@ def execute_from_env(browser: dict[str, Any]) -> None:
         "completed_checkpoints": completed,
         "success_condition": contract["success"]["condition"],
         "traffic": payload.get("traffic"),
+        "traffic_checkpoints": payload.get("traffic_checkpoints"),
+        "traffic_observability": {
+            "requested": bool(payload.get("capture_traffic")),
+            "boundaries": len(traffic_boundaries),
+            "degraded": any(
+                boundary.get("settle", {}).get("outcome") in degraded_outcomes
+                for boundary in traffic_boundaries
+            ),
+        },
     }
     _write_json(run_dir / "result.json", result)
     _write_json(
