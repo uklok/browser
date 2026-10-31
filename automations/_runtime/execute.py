@@ -88,6 +88,18 @@ def _read_traffic_state(path: Path) -> tuple[dict[str, Any] | None, str | None]:
         return None, f"traffic state could not be read: {exc}"
 
 
+
+def _process_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
 def _traffic_item(value: dict[str, Any], now_epoch: float) -> dict[str, Any]:
     started_at = value.get("started_at")
     age_seconds = max(0.0, now_epoch - started_at) if isinstance(started_at, (int, float)) else None
@@ -206,6 +218,11 @@ def _traffic_boundary(
                 break
 
             final_state = state
+            if not _process_alive(state.get("recorder_pid")):
+                error = "traffic recorder is no longer running"
+                outcome = "unavailable"
+                break
+
             now_epoch = time.time()
             final_classification = _classify_traffic_state(
                 state,

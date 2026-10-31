@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import datetime as dt
 import json
+import os
 import signal
 import time
 from pathlib import Path
@@ -55,6 +56,7 @@ class CDPTrafficRecorder:
     def _write_state(self) -> None:
         payload = {
             "schema": STATE_SCHEMA,
+            "recorder_pid": os.getpid(),
             "updated_at": _now(),
             "latest_seq": self.sequence,
             "lifecycle_seq": self.lifecycle_seq,
