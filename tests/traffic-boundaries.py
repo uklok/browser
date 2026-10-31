@@ -55,6 +55,7 @@ classified = execute._classify_traffic_state(
             {
                 "key": "page:fetch",
                 "request_id": "fetch",
+                "target_id": "controlled",
                 "type": "Fetch",
                 "method": "GET",
                 "url": "https://example.test/fetch",
@@ -63,6 +64,7 @@ classified = execute._classify_traffic_state(
             {
                 "key": "page:stale",
                 "request_id": "stale",
+                "target_id": "controlled",
                 "type": "XHR",
                 "method": "GET",
                 "url": "https://example.test/stale",
@@ -71,6 +73,7 @@ classified = execute._classify_traffic_state(
             {
                 "key": "page:events",
                 "request_id": "events",
+                "target_id": "controlled",
                 "type": "EventSource",
                 "method": "GET",
                 "url": "https://example.test/events",
@@ -81,6 +84,7 @@ classified = execute._classify_traffic_state(
             {
                 "key": "page:ws",
                 "request_id": "ws",
+                "target_id": "controlled",
                 "type": "WebSocket",
                 "url": "wss://example.test/socket",
                 "started_at": now - 60,
@@ -89,10 +93,33 @@ classified = execute._classify_traffic_state(
     ),
     now_epoch=now,
     stale_after_seconds=30,
+    target_id="controlled",
 )
 assert [item["request_id"] for item in classified["blocking"]] == ["fetch"]
 assert [item["request_id"] for item in classified["stale"]] == ["stale"]
 assert {item["request_id"] for item in classified["persistent"]} == {"events", "ws"}
+
+other_target = execute._classify_traffic_state(
+    state(
+        latest_seq=1,
+        lifecycle_seq=1,
+        active=[
+            {
+                "key": "other:req",
+                "request_id": "other",
+                "target_id": "other",
+                "type": "Fetch",
+                "method": "GET",
+                "url": "https://other.test/",
+                "started_at": now,
+            }
+        ],
+    ),
+    now_epoch=now,
+    stale_after_seconds=30,
+    target_id="controlled",
+)
+assert other_target["blocking"] == []
 
 
 with tempfile.TemporaryDirectory() as raw_tmp:

@@ -139,9 +139,11 @@ class CDPTrafficRecorder:
                 self.counters["redirected"] += 1
             self.counters["started"] += 1
             self.lifecycle_seq += 1
+            target = self.session_to_target.get(session_id) or {}
             self.active_requests[key] = {
                 "key": key,
                 "session_id": session_id,
+                "target_id": target.get("targetId"),
                 "request_id": request_id,
                 "url": request.get("url"),
                 "method": request.get("method"),
@@ -175,9 +177,11 @@ class CDPTrafficRecorder:
 
         if method == "Network.webSocketCreated":
             self.lifecycle_seq += 1
+            target = self.session_to_target.get(session_id) or {}
             self.open_streams[key] = {
                 "key": key,
                 "session_id": session_id,
+                "target_id": target.get("targetId"),
                 "request_id": request_id,
                 "url": params.get("url"),
                 "type": "WebSocket",
@@ -194,9 +198,11 @@ class CDPTrafficRecorder:
             transport_id = params.get("transportId")
             transport_key = self._request_key(session_id, transport_id)
             self.lifecycle_seq += 1
+            target = self.session_to_target.get(session_id) or {}
             self.open_streams[transport_key] = {
                 "key": transport_key,
                 "session_id": session_id,
+                "target_id": target.get("targetId"),
                 "request_id": transport_id,
                 "url": params.get("url"),
                 "type": "WebTransport",

@@ -106,6 +106,7 @@ def _traffic_item(value: dict[str, Any], now_epoch: float) -> dict[str, Any]:
     item = {
         "key": value.get("key"),
         "request_id": value.get("request_id"),
+        "target_id": value.get("target_id"),
         "type": value.get("type"),
         "method": value.get("method"),
         "url": value.get("url"),
@@ -121,12 +122,15 @@ def _classify_traffic_state(
     *,
     now_epoch: float,
     stale_after_seconds: float,
+    target_id: str | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     blocking: list[dict[str, Any]] = []
     stale: list[dict[str, Any]] = []
     persistent: list[dict[str, Any]] = []
 
     for request in state.get("active_requests", []):
+        if target_id and request.get("target_id") != target_id:
+            continue
         item = _traffic_item(request, now_epoch)
         if request.get("type") in PERSISTENT_RESOURCE_TYPES:
             persistent.append(item)
@@ -140,6 +144,8 @@ def _classify_traffic_state(
             blocking.append(item)
 
     for stream in state.get("open_streams", []):
+        if target_id and stream.get("target_id") != target_id:
+            continue
         persistent.append(_traffic_item(stream, now_epoch))
 
     return {
@@ -147,6 +153,21 @@ def _classify_traffic_state(
         "stale": stale,
         "persistent": persistent,
     }
+
+
+
+def _traffic_target_id(browser: dict[str, Any]) -> str | None:
+    current_tab = browser.get("current_tab")
+    if not callable(current_tab):
+        return None
+    try:
+        tab = current_tab()
+    except Exception:
+        return None
+    if not isinstance(tab, dict):
+        return None
+    value = tab.get("targetId") or tab.get("target_id")
+    return str(value) if value else None
 
 
 def _traffic_cursor(payload: dict[str, Any]) -> dict[str, Any]:
@@ -185,6 +206,7 @@ def _traffic_boundary(
     step: dict[str, Any],
     step_status: str,
     cursor: dict[str, Any],
+    target_id: str | None = None,
     policy: dict[str, float] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     if not payload.get("capture_traffic"):
@@ -228,6 +250,7 @@ def _traffic_boundary(
                 state,
                 now_epoch=now_epoch,
                 stale_after_seconds=settings["stale_after_seconds"],
+                target_id=target_id,
             )
             lifecycle = int(state.get("lifecycle_seq", 0))
             now_mono = time.monotonic()
@@ -270,6 +293,7 @@ def _traffic_boundary(
         "step": step["id"],
         "checkpoint": step["checkpoint"],
         "step_status": step_status,
+        "target_id": target_id,
         "at": _now(),
         "from_seq": int(cursor.get("seq", 0)) + 1,
         "through_seq": current_seq,
@@ -427,6 +451,7 @@ def execute_from_env(browser: dict[str, Any]) -> None:
                 step=step,
                 step_status="exception",
                 cursor=traffic_cursor,
+                target_id=_traffic_target_id(browser),
             )
             if traffic_boundary:
                 traffic_boundaries.append(traffic_boundary)
@@ -459,6 +484,7 @@ def execute_from_env(browser: dict[str, Any]) -> None:
                 step=step,
                 step_status="checkpoint_failed",
                 cursor=traffic_cursor,
+                target_id=_traffic_target_id(browser),
             )
             if traffic_boundary:
                 traffic_boundaries.append(traffic_boundary)
@@ -489,6 +515,7 @@ def execute_from_env(browser: dict[str, Any]) -> None:
             step=step,
             step_status="passed",
             cursor=traffic_cursor,
+            target_id=_traffic_target_id(browser),
         )
         if traffic_boundary:
             traffic_boundaries.append(traffic_boundary)
