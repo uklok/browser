@@ -33,6 +33,8 @@ def state(
     active: list[dict] | None = None,
     streams: list[dict] | None = None,
     counters: dict | None = None,
+    target_counters: dict | None = None,
+    target_lifecycle_seq: dict | None = None,
     recorder_pid: int | None = None,
 ) -> dict:
     return {
@@ -40,7 +42,9 @@ def state(
         "recorder_pid": os.getpid() if recorder_pid is None else recorder_pid,
         "latest_seq": latest_seq,
         "lifecycle_seq": lifecycle_seq,
+        "target_lifecycle_seq": target_lifecycle_seq or {},
         "counters": counters or {},
+        "target_counters": target_counters or {},
         "active_requests": active or [],
         "open_streams": streams or [],
     }
@@ -98,6 +102,10 @@ classified = execute._classify_traffic_state(
 assert [item["request_id"] for item in classified["blocking"]] == ["fetch"]
 assert [item["request_id"] for item in classified["stale"]] == ["stale"]
 assert {item["request_id"] for item in classified["persistent"]} == {"events", "ws"}
+assert execute._counter_delta(
+    {"failed": 2, "http_error": 1},
+    {"failed": 1, "http_error": 0},
+) == {"failed": 1, "http_error": 1}
 
 other_target = execute._classify_traffic_state(
     state(
@@ -120,6 +128,14 @@ other_target = execute._classify_traffic_state(
     target_id="controlled",
 )
 assert other_target["blocking"] == []
+assert execute._traffic_lifecycle_seq(
+    state(
+        latest_seq=1,
+        lifecycle_seq=99,
+        target_lifecycle_seq={"controlled": 3, "other": 96},
+    ),
+    "controlled",
+) == 3
 
 
 with tempfile.TemporaryDirectory() as raw_tmp:

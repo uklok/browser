@@ -170,8 +170,23 @@ def _traffic_target_id(browser: dict[str, Any]) -> str | None:
     return str(value) if value else None
 
 
+
+def _traffic_lifecycle_seq(state: dict[str, Any], target_id: str | None) -> int:
+    if target_id:
+        target_values = state.get("target_lifecycle_seq") or {}
+        return int(target_values.get(target_id, 0))
+    return int(state.get("lifecycle_seq", 0))
+
+
+def _traffic_counters(state: dict[str, Any], target_id: str | None) -> dict[str, Any]:
+    if target_id:
+        target_values = state.get("target_counters") or {}
+        return dict(target_values.get(target_id) or {})
+    return dict(state.get("counters") or {})
+
+
 def _traffic_cursor(payload: dict[str, Any]) -> dict[str, Any]:
-    cursor = {"seq": 0, "counters": {}}
+    cursor = {"seq": 0, "target_counters": {}}
     if not payload.get("capture_traffic"):
         return cursor
 
@@ -185,6 +200,10 @@ def _traffic_cursor(payload: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "seq": int(state.get("latest_seq", 0)),
+        "target_counters": {
+            key: dict(value)
+            for key, value in (state.get("target_counters") or {}).items()
+        },
         "counters": dict(state.get("counters") or {}),
     }
 
@@ -252,7 +271,7 @@ def _traffic_boundary(
                 stale_after_seconds=settings["stale_after_seconds"],
                 target_id=target_id,
             )
-            lifecycle = int(state.get("lifecycle_seq", 0))
+            lifecycle = _traffic_lifecycle_seq(state, target_id)
             now_mono = time.monotonic()
 
             if final_classification["blocking"]:
@@ -279,12 +298,20 @@ def _traffic_boundary(
         error = f"{type(exc).__name__}: {exc}"
 
     current_seq = cursor.get("seq", 0)
-    current_counters: dict[str, Any] = dict(cursor.get("counters") or {})
+    previous_target_counters = dict((cursor.get("target_counters") or {}).get(target_id) or {}) if target_id else dict(cursor.get("counters") or {})
+    current_counters: dict[str, Any] = previous_target_counters
+    current_target_counters = dict(cursor.get("target_counters") or {})
+    global_counters = dict(cursor.get("counters") or {})
     lifecycle_seq = None
     if final_state is not None:
         current_seq = int(final_state.get("latest_seq", current_seq))
-        current_counters = dict(final_state.get("counters") or {})
-        lifecycle_seq = int(final_state.get("lifecycle_seq", 0))
+        current_counters = _traffic_counters(final_state, target_id)
+        current_target_counters = {
+            key: dict(value)
+            for key, value in (final_state.get("target_counters") or {}).items()
+        }
+        global_counters = dict(final_state.get("counters") or {})
+        lifecycle_seq = _traffic_lifecycle_seq(final_state, target_id)
 
     boundary = {
         "schema": "uklok.browser.traffic-checkpoint/v1",
@@ -297,7 +324,7 @@ def _traffic_boundary(
         "at": _now(),
         "from_seq": int(cursor.get("seq", 0)) + 1,
         "through_seq": current_seq,
-        "traffic_delta": _counter_delta(current_counters, dict(cursor.get("counters") or {})),
+        "traffic_delta": _counter_delta(current_counters, previous_target_counters),
         "settle": {
             "outcome": outcome,
             "waited_ms": round((time.monotonic() - started) * 1000),
@@ -319,7 +346,11 @@ def _traffic_boundary(
         boundary["settle"]["outcome"] = "error"
         boundary["settle"]["error"] = f"could not persist traffic boundary: {type(exc).__name__}: {exc}"
 
-    return boundary, {"seq": current_seq, "counters": current_counters}
+    return boundary, {
+        "seq": current_seq,
+        "target_counters": current_target_counters,
+        "counters": global_counters,
+    }
 
 
 def _failure(

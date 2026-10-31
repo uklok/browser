@@ -28,6 +28,8 @@ class CDPTrafficRecorder:
         self.next_id = 0
         self.sequence = 0
         self.lifecycle_seq = 0
+        self.target_lifecycle_seq: dict[str, int] = {}
+        self.target_counters: dict[str, dict[str, int]] = {}
         self.pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self.target_to_session: dict[str, str] = {}
         self.session_to_target: dict[str, dict[str, Any]] = {}
@@ -60,7 +62,9 @@ class CDPTrafficRecorder:
             "updated_at": _now(),
             "latest_seq": self.sequence,
             "lifecycle_seq": self.lifecycle_seq,
+            "target_lifecycle_seq": dict(self.target_lifecycle_seq),
             "counters": dict(self.counters),
+            "target_counters": {key: dict(value) for key, value in self.target_counters.items()},
             "active_requests": list(self.active_requests.values()),
             "open_streams": list(self.open_streams.values()),
         }
@@ -68,17 +72,43 @@ class CDPTrafficRecorder:
         tmp.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         tmp.replace(self.state_file)
 
+
+
+    def _target_id(self, session_id: str | None) -> str | None:
+        target = self.session_to_target.get(session_id) or {}
+        value = target.get("targetId")
+        return str(value) if value else None
+
+    def _bump_lifecycle(self, target_id: str | None) -> None:
+        self.lifecycle_seq += 1
+        if target_id:
+            self.target_lifecycle_seq[target_id] = self.target_lifecycle_seq.get(target_id, 0) + 1
+
+    def _increment_counter(self, name: str, target_id: str | None) -> None:
+        self.counters[name] += 1
+        if not target_id:
+            return
+        counters = self.target_counters.setdefault(
+            target_id,
+            {"started": 0, "finished": 0, "failed": 0, "http_error": 0, "redirected": 0},
+        )
+        counters[name] += 1
+
+
     def _drop_session(self, session_id: str) -> None:
         request_prefix = f"{session_id}:"
-        removed = False
+        removed_target_ids: set[str] = set()
         for key in [key for key in self.active_requests if key.startswith(request_prefix)]:
-            self.active_requests.pop(key, None)
-            removed = True
+            value = self.active_requests.pop(key, None) or {}
+            if value.get("target_id"):
+                removed_target_ids.add(str(value["target_id"]))
         for key in [key for key in self.open_streams if key.startswith(request_prefix)]:
-            self.open_streams.pop(key, None)
-            removed = True
-        if removed:
-            self.lifecycle_seq += 1
+            value = self.open_streams.pop(key, None) or {}
+            if value.get("target_id"):
+                removed_target_ids.add(str(value["target_id"]))
+        if removed_target_ids:
+            for target_id in removed_target_ids:
+                self._bump_lifecycle(target_id)
             self._write_state()
 
     async def send(
@@ -132,18 +162,18 @@ class CDPTrafficRecorder:
         request_id = params.get("requestId")
         key = self._request_key(session_id, request_id)
         now = time.time()
+        target_id = self._target_id(session_id)
 
         if method == "Network.requestWillBeSent":
             request = params.get("request") or {}
             if key in self.active_requests:
-                self.counters["redirected"] += 1
-            self.counters["started"] += 1
-            self.lifecycle_seq += 1
-            target = self.session_to_target.get(session_id) or {}
+                self._increment_counter("redirected", target_id)
+            self._increment_counter("started", target_id)
+            self._bump_lifecycle(target_id)
             self.active_requests[key] = {
                 "key": key,
                 "session_id": session_id,
-                "target_id": target.get("targetId"),
+                "target_id": target_id,
                 "request_id": request_id,
                 "url": request.get("url"),
                 "method": request.get("method"),
@@ -160,28 +190,29 @@ class CDPTrafficRecorder:
                 active["response_status"] = status
                 if isinstance(status, (int, float)) and status >= 400 and not active.get("http_error_counted"):
                     active["http_error_counted"] = True
-                    self.counters["http_error"] += 1
+                    self._increment_counter("http_error", active.get("target_id"))
             return
 
         if method == "Network.loadingFinished":
-            self.active_requests.pop(key, None)
-            self.counters["finished"] += 1
-            self.lifecycle_seq += 1
+            active = self.active_requests.pop(key, None) or {}
+            active_target = active.get("target_id") or target_id
+            self._increment_counter("finished", active_target)
+            self._bump_lifecycle(active_target)
             return
 
         if method == "Network.loadingFailed":
-            self.active_requests.pop(key, None)
-            self.counters["failed"] += 1
-            self.lifecycle_seq += 1
+            active = self.active_requests.pop(key, None) or {}
+            active_target = active.get("target_id") or target_id
+            self._increment_counter("failed", active_target)
+            self._bump_lifecycle(active_target)
             return
 
         if method == "Network.webSocketCreated":
-            self.lifecycle_seq += 1
-            target = self.session_to_target.get(session_id) or {}
+            self._bump_lifecycle(target_id)
             self.open_streams[key] = {
                 "key": key,
                 "session_id": session_id,
-                "target_id": target.get("targetId"),
+                "target_id": target_id,
                 "request_id": request_id,
                 "url": params.get("url"),
                 "type": "WebSocket",
@@ -190,19 +221,18 @@ class CDPTrafficRecorder:
             return
 
         if method == "Network.webSocketClosed":
-            self.open_streams.pop(key, None)
-            self.lifecycle_seq += 1
+            stream = self.open_streams.pop(key, None) or {}
+            self._bump_lifecycle(stream.get("target_id") or target_id)
             return
 
         if method == "Network.webTransportCreated":
             transport_id = params.get("transportId")
             transport_key = self._request_key(session_id, transport_id)
-            self.lifecycle_seq += 1
-            target = self.session_to_target.get(session_id) or {}
+            self._bump_lifecycle(target_id)
             self.open_streams[transport_key] = {
                 "key": transport_key,
                 "session_id": session_id,
-                "target_id": target.get("targetId"),
+                "target_id": target_id,
                 "request_id": transport_id,
                 "url": params.get("url"),
                 "type": "WebTransport",
@@ -213,8 +243,8 @@ class CDPTrafficRecorder:
         if method == "Network.webTransportClosed":
             transport_id = params.get("transportId")
             transport_key = self._request_key(session_id, transport_id)
-            self.open_streams.pop(transport_key, None)
-            self.lifecycle_seq += 1
+            stream = self.open_streams.pop(transport_key, None) or {}
+            self._bump_lifecycle(stream.get("target_id") or target_id)
 
     def emit(self, raw: dict[str, Any]) -> None:
         self.sequence += 1
