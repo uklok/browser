@@ -6,7 +6,7 @@ on:
       - "bin/**"
       - "automations/**"
       - "requirements-browser-use.txt"
-      - "tests/tooling-static.sh"
+      - "tests/**"
       - ".github/workflows/tooling.yml"
 
 permissions:
