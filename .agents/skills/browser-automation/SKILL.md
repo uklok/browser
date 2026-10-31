@@ -58,14 +58,15 @@ A failed checkpoint is usually one of four things:
 - **substrate failure** — Chrome/CDP/profile/runtime is unhealthy;
 - **behavior change** — the site/page no longer behaves as the contract describes;
 - **implementation drift** — the module no longer faithfully implements the contract;
-- **authority/human boundary** — the next action is outside the contract's pre-authorized behavior.
+- **authority/human boundary** — the next action is outside the contract's pre-authorized behavior;
+- **observability degradation** — the functional checkpoint may be valid while optional traffic evidence is `timeout_busy`, `unavailable`, stale, or otherwise incomplete.
 
-Do not “fix” a substrate failure with selector logic or an authority boundary with a silent workaround.
+Do not “fix” a substrate failure with selector logic or an authority boundary with a silent workaround. Do not turn an observability degradation into a business failure unless the contract's actual outcome depends on that network fact.
 
 ## Repair loop
 
 1. Reproduce or inspect the failed checkpoint with `./bin/browser-use`; preserve the human's current browser state.
-2. Compare **expected** vs **observed** from `failure.json`. If it references `traffic.jsonl`, inspect only the network slice relevant to the failed checkpoint before broad browser exploration.
+2. Compare **expected** vs **observed** from `failure.json`. If it references traffic evidence, read that checkpoint's `from_seq..through_seq` boundary first and inspect only that slice of `traffic.jsonl` before broad browser exploration. Treat stale/persistent carry-over separately from traffic initiated inside the failed step.
 3. If browser/site behavior changed, update the failed contract step first:
    - `pseudocode`;
    - `checkpoint`;
@@ -121,13 +122,17 @@ Each `step_<id>(ctx)`:
 
 A checkpoint failure stops later steps.
 
+When `--capture-traffic` is active, the shared runner owns the network transition after the step returns. Do **not** add generic sleeps or duplicate "network idle" loops inside `run.py`. The runner waits for a quiet window and records a traffic boundary before the next step.
+
+Traffic settling is a second evidence dimension, not the business checkpoint itself. `loadingFailed`, HTTP >= 400, stale requests, persistent streams, `timeout_busy`, or an unavailable recorder can be highly relevant evidence without automatically making `ok: true` false.
+
 ## Inputs and secrets
 
 Inputs may be marked `sensitive = true`.
 
 The runtime passes their real values to the module but records `<redacted>` in durable run/failure metadata. Prefer the authenticated Chrome profile over passing credentials as automation inputs.
 
-`--capture-traffic` is diagnostic evidence, not a default. Its `traffic.jsonl` can contain headers, cookies and request post data; keep it local under `.runs/` and enable it only when network behavior materially helps proof or repair.
+`--capture-traffic` is diagnostic evidence, not a default. Its `traffic.jsonl` can contain headers, cookies and request post data; keep it local under `.runs/` and enable it only when network behavior materially helps proof or repair. `traffic-checkpoints.jsonl` is the index that maps each automation checkpoint to an exact raw sequence range plus quiet/stale/persistent/busy classification.
 
 ## One interactive lane
 

@@ -169,7 +169,7 @@ No LLM/agent is loaded.
 
 ### Optional raw traffic capture
 
-When a failure may depend on backend/API behavior, enable an independent Chrome CDP observer:
+When backend/API behavior or page transitions matter to proof, enable the independent Chrome CDP observer:
 
 ~~~bash
 ./bin/browser-automation run example_read_page --capture-traffic
@@ -178,12 +178,46 @@ When a failure may depend on backend/API behavior, enable an independent Chrome 
 The run then contains:
 
 ~~~text
-.runs/<automation>/<run-id>/traffic.jsonl
+.runs/<automation>/<run-id>/
+├── traffic.jsonl
+├── traffic-state.json
+└── traffic-checkpoints.jsonl
 ~~~
 
-Each line preserves one raw Chrome `Network.*` CDP event under a `cdp` field, plus capture time and target metadata. The recorder uses its own browser-level CDP connection; it does **not** drain Browser Harness's event buffer and therefore does not steal network events from automation helpers.
+`traffic.jsonl` is the raw evidence. Every Chrome `Network.*` event receives a monotonically increasing `seq`, capture time and target metadata. The recorder uses its own browser-level CDP connection; it does **not** drain Browser Harness's event buffer and therefore does not steal network events from automation helpers.
 
-This is protocol-event capture, not packet capture: response bodies are not fetched separately. Chrome events can still contain request/response headers, cookies and request post data. Treat `traffic.jsonl` as sensitive browser-session evidence. It stays under gitignored `.runs/` and should only be enabled when it changes diagnosis or proof.
+`traffic-state.json` is an internal live snapshot owned by the recorder. It tracks active requests, persistent streams and cumulative request outcomes so the runner can reason about in-flight work without parsing the append-only capture.
+
+`traffic-checkpoints.jsonl` is the learning index. After each deterministic step returns — pass, checkpoint failure, or exception — the runner waits at the checkpoint boundary before moving on. Each boundary records `from_seq` and `through_seq`, so the corresponding raw traffic segment can be recovered without timestamp guessing.
+
+#### Traffic settling
+
+The current runtime defaults are:
+
+- a request opened by `Network.requestWillBeSent` blocks the boundary until it reaches `loadingFinished` or `loadingFailed`;
+- after no blocking request/lifecycle change is observed for **750 ms**, the boundary is `quiet`;
+- EventSource plus open WebSocket/WebTransport connections are **persistent carry-over** and do not block forever;
+- an ordinary request already active for **30 s** is classified **stale carry-over** rather than becoming an infinite barrier;
+- if ordinary blocking traffic still exists after **10 s**, the boundary becomes `timeout_busy`;
+- if the independent observer is missing or dies, the boundary becomes `unavailable`.
+
+`loadingFailed`, HTTP responses with status >= 400, stale requests and persistent streams remain evidence in the checkpoint segment. They do **not** automatically mean the automation's business checkpoint failed. Likewise, `timeout_busy` or `unavailable` degrades traffic observability but does not convert an otherwise-valid deterministic step into failure.
+
+This distinction is intentional:
+
+~~~text
+functional checkpoint
+    proves the automation's domain claim
+
+traffic boundary
+    proves how cleanly network evidence can be segmented around that claim
+~~~
+
+Do not add arbitrary `wait()` calls to every automation in an attempt to recreate network-idle behavior. When traffic capture is enabled, the shared runner owns this transition once.
+
+A request that remains stale/persistent across a boundary is listed as carry-over; its later raw events keep their sequence numbers and can therefore be connected across adjacent segments during repair or later learning.
+
+This is protocol-event capture, not packet capture: response bodies are not fetched separately. Chrome events can still contain request/response headers, cookies and request post data. Treat all three traffic artifacts as sensitive browser-session evidence. They stay under gitignored `.runs/` and should only be enabled when they change diagnosis or proof.
 
 ## Checkpoints
 
@@ -211,7 +245,8 @@ Failures live under `.runs/`, which is intentionally gitignored.
 - exception when one occurred;
 - current browser/tab/page information when available;
 - screenshot path when capture succeeds;
-- `traffic.jsonl` path when the run used `--capture-traffic`;
+- `traffic.jsonl` and `traffic-checkpoints.jsonl` paths when the run used `--capture-traffic`;
+- the failed step's traffic boundary, including its exact raw sequence range and settle classification;
 - contract and module paths;
 - exact `step_<id>()` function;
 - safe restart/resume instruction;
