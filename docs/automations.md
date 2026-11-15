@@ -300,7 +300,7 @@ The derived surface is deterministic and observed-only:
             │   ├── operations.json
             │   └── observed-schema.json
             └── openapi/
-                └── <host>.json
+                └── <canonical-host>-<sha256>.json
 ~~~
 
 REST operations group by method + canonical host + generic templated path. Host case is normalized and default ports are removed before identity; OpenAPI filenames include a deterministic host hash so distinct canonical hosts cannot collide on case-insensitive or punctuation-normalizing filesystems. Path templating also treats generic high-entropy opaque segments as dynamic evidence without provider-specific grammars.

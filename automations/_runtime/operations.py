@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import re
 import shutil
 from pathlib import Path
@@ -214,6 +215,19 @@ def _assemble(run: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return list(calls.values()), boundaries
 
 
+def _entropy(value: str) -> float:
+    if not value:
+        return 0.0
+    counts: dict[str, int] = {}
+    for character in value:
+        counts[character] = counts.get(character, 0) + 1
+    total = len(value)
+    return -sum(
+        (count / total) * math.log2(count / total)
+        for count in counts.values()
+    )
+
+
 def _identifier(segment: str) -> bool:
     decoded = unquote(segment)
     if UUID.fullmatch(decoded) or (decoded.isdigit() and len(decoded) >= 4):
@@ -239,6 +253,17 @@ def _identifier(segment: str) -> bool:
     if length >= 8 and punctuation and has_alpha and digits and unique_ratio >= 0.70 and (mixed_case or digits >= 3):
         return True
     if length >= 9 and has_alpha and digits and unique_ratio >= 0.75 and (mixed_case or digits >= 3):
+        return True
+    # Long opaque encodings are often alphabetic (for example base64 without
+    # padding/digits). Entropy catches that shape without naming a provider.
+    if (
+        length >= 16
+        and has_alpha
+        and not digits
+        and not punctuation
+        and unique_ratio >= 0.55
+        and _entropy(decoded) >= 3.5
+    ):
         return True
     return False
 
@@ -704,8 +729,10 @@ def _credential_rules(calls: list[dict[str, Any]], deps: dict[str, list[dict[str
     domains: dict[str, set[str]] = {}
     goals: dict[str, set[str]] = {}
     operations: dict[str, set[str]] = {}
+    operation_memberships: dict[str, set[str]] = {}
     for call in calls:
         identities = _identities(call)
+        operation_memberships[call["key"]] = {identity["key"] for identity in identities}
         domains.setdefault(identities[0]["host"], set()).add(call["key"])
         if call.get("owner"):
             goals.setdefault(str(call["owner"]), set()).add(call["key"])
@@ -744,9 +771,19 @@ def _credential_rules(calls: list[dict[str, Any]], deps: dict[str, list[dict[str
         else:
             for scope, contexts in (("domain", domains), ("operation", operations), ("goal", goals)):
                 for context, context_calls in sorted(contexts.items()):
-                    if context_calls and context_calls <= remaining:
-                        add_rule(scope, context, context_calls)
-                        remaining -= context_calls
+                    covered = context_calls
+                    if scope == "operation":
+                        # One physical GraphQL batch can represent several logical
+                        # operations. Never let iteration order assign a transport-
+                        # level credential to one arbitrary batch entry.
+                        covered = {
+                            request_key
+                            for request_key in context_calls
+                            if operation_memberships.get(request_key) == {context}
+                        }
+                    if covered and covered <= remaining:
+                        add_rule(scope, context, covered)
+                        remaining -= covered
 
         if remaining:
             rules.append(
@@ -1063,7 +1100,9 @@ def _graphql_secret_literal(text: str, secret: str) -> bool:
 
 def _host_filename(host: str) -> str:
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", host).strip("._-") or "host"
-    digest = hashlib.sha256(host.encode()).hexdigest()[:12]
+    # Keep the readable stem bounded while the full digest owns uniqueness.
+    stem = stem[:120]
+    digest = hashlib.sha256(host.encode()).hexdigest()
     return f"{stem}-{digest}.json"
 
 
@@ -1152,6 +1191,7 @@ def derive_operations(run: Path, step: str | None = None) -> dict[str, Any]:
     index = {
         "schema": "uklok.browser.operation-index/v1",
         "generation": generation,
+        "reader_fingerprint": _reader_fingerprint(),
         "complete": False,
         "authority": "observed-only",
         "scope": {

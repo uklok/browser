@@ -504,7 +504,10 @@ def test_graphql_variants_are_explicit() -> None:
                 "request": {
                     "method": "POST",
                     "url": "https://gql.example/graphql",
-                    "headers": {"Content-Type": "application/json"},
+                    "headers": {
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer batch-shared-secret",
+                    },
                     "postData": json.dumps(batch),
                 },
             },
@@ -612,6 +615,17 @@ def test_graphql_variants_are_explicit() -> None:
         assert len(unparsed) == 2
         opaque = next(record for record in unparsed if record["operation_name"].startswith("unparsed-"))
         assert opaque["unparsed_reasons"] == ["graphql-document-not-understood"]
+        batch_auth_rules = [
+            rule
+            for rule in index["credential_rules"]
+            if rule["kind"] == "header" and rule["name"] == "Authorization"
+        ]
+        assert any(
+            rule["scope"] == "partial"
+            and rule.get("request_keys") == ["session-1:batch"]
+            for rule in batch_auth_rules
+        )
+        assert all(rule["scope"] != "operation" for rule in batch_auth_rules)
     finally:
         shutil.rmtree(run, ignore_errors=True)
 
@@ -718,7 +732,12 @@ def test_secret_verification_distinguishes_names_from_values() -> None:
 
 
 def test_opaque_path_material_is_templated() -> None:
-    opaque = ["A1-b2_C", "abc.1234-xy", "aB:12-cD"]
+    opaque = [
+        "A1-b2_C",
+        "abc.1234-xy",
+        "aB:12-cD",
+        "QWxhZGRpbjpvcGVuU2VzYW1l",
+    ]
     run = make_run(
         ["step_a"],
         [
@@ -740,14 +759,20 @@ def test_opaque_path_material_is_templated() -> None:
                 "three",
                 {"type": "XHR", "request": {"method": "GET", "url": f"https://api.example/challenge/{opaque[2]}", "headers": {}}},
             ),
+            raw(
+                4,
+                "Network.requestWillBeSent",
+                "four",
+                {"type": "XHR", "request": {"method": "GET", "url": f"https://api.example/challenge/{opaque[3]}", "headers": {}}},
+            ),
         ],
-        [{"step": "step_a", "from_seq": 1, "through_seq": 3, "target_id": "page-1"}],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 4, "target_id": "page-1"}],
     )
     try:
         index = operations.derive_operations(run)
         assert "http|GET|api.example|/challenge/{id}" in index["operation_keys"]
         assert "http|GET|api.example|/session/{id}" in index["operation_keys"]
-        assert index["operation_counts"]["http|GET|api.example|/challenge/{id}"] == 2
+        assert index["operation_counts"]["http|GET|api.example|/challenge/{id}"] == 3
         derived = b"\n".join(snapshot(run).values())
         for value in opaque:
             assert value.encode() not in derived
