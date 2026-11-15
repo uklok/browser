@@ -498,6 +498,9 @@ def _identity(call: dict[str, Any]) -> dict[str, Any]:
 
 
 def _identity_for_key(call: dict[str, Any], key: str) -> dict[str, Any]:
+    pinned = call.get("_group_identity")
+    if isinstance(pinned, dict) and pinned.get("key") == key:
+        return pinned
     return next(identity for identity in _identities(call) if identity["key"] == key)
 
 
@@ -687,7 +690,12 @@ def _group(calls: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     out: dict[str, list[dict[str, Any]]] = {}
     for call in calls:
         for identity in _identities(call):
-            out.setdefault(identity["key"], []).append(call)
+            # Keep the exact logical entry that produced this grouping. This is
+            # required when one physical GraphQL batch contains repeated operation
+            # names: resolving the key again would always select the first entry.
+            observation = dict(call)
+            observation["_group_identity"] = identity
+            out.setdefault(identity["key"], []).append(observation)
     return out
 
 

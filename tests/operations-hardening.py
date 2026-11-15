@@ -630,6 +630,68 @@ def test_graphql_variants_are_explicit() -> None:
         shutil.rmtree(run, ignore_errors=True)
 
 
+def test_repeated_graphql_batch_name_keeps_entry_evidence() -> None:
+    batch = [
+        {
+            "operationName": "RepeatedThing",
+            "query": "query RepeatedThing($id: ID!) { thing(id: $id) { id } }",
+            "variables": {"id": "left"},
+        },
+        {
+            "operationName": "RepeatedThing",
+            "query": "query RepeatedThing($id: ID!) { thing(id: $id) { id } }",
+            "variables": {"id": "right"},
+        },
+    ]
+    run = make_run(
+        ["step_a"],
+        [
+            raw(
+                1,
+                "Network.requestWillBeSent",
+                "batch-repeat",
+                {
+                    "type": "Fetch",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://gql.example/graphql",
+                        "headers": {"Content-Type": "application/json"},
+                        "postData": json.dumps(batch),
+                    },
+                },
+            ),
+            body(
+                2,
+                "batch-repeat",
+                json.dumps(
+                    [
+                        {"data": {"thing": {"id": "left"}}},
+                        {"errors": [{"message": "right-failed"}]},
+                    ]
+                ),
+            ),
+        ],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 2, "target_id": "page-1"}],
+    )
+    try:
+        index = operations.derive_operations(run)
+        key = "graphql|gql.example|/graphql|json-batch|RepeatedThing"
+        assert index["total_observed_calls"] == 1
+        assert index["logical_operation_observations"] == 2
+        assert index["operation_counts"][key] == 2
+
+        records = read(
+            run / "steps" / "01-step_a" / "operations" / "graphql" / "operations.json"
+        )["operations"]
+        record = next(item for item in records if item["key"] == key)
+        assert record["count"] == 2
+        properties = record["observed_result_schema"]["properties"]
+        assert "data" in properties
+        assert "errors" in properties
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
 def test_host_identity_and_openapi_names() -> None:
     urls = [
         "https://API.Example/case",
@@ -1031,6 +1093,7 @@ test_duplicate_checkpoint_is_unattributed()
 test_checkpoint_corruption_never_manufactures_owner()
 test_step_regeneration_invalidates_siblings()
 test_graphql_variants_are_explicit()
+test_repeated_graphql_batch_name_keeps_entry_evidence()
 test_host_identity_and_openapi_names()
 test_secret_verification_distinguishes_names_from_values()
 test_short_lifted_secret_in_path_fails_closed()
