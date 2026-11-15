@@ -736,7 +736,7 @@ def test_opaque_path_material_is_templated() -> None:
         "A1-b2_C",
         "abc.1234-xy",
         "aB:12-cD",
-        "QWxhZGRpbjpvcGVuU2VzYW1l",
+        "jStkcFiTKsVzcqdhcpWMPdYC",
     ]
     run = make_run(
         ["step_a"],
