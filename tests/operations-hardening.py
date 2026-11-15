@@ -731,6 +731,41 @@ def test_secret_verification_distinguishes_names_from_values() -> None:
         shutil.rmtree(run, ignore_errors=True)
 
 
+def test_short_lifted_secret_in_path_fails_closed() -> None:
+    secret = "s3cr"
+    run = make_run(
+        ["step_a"],
+        [
+            raw(
+                1,
+                "Network.requestWillBeSent",
+                "r1",
+                {
+                    "type": "XHR",
+                    "request": {
+                        "method": "GET",
+                        "url": f"https://api.example/reset/{secret}",
+                        "headers": {"Authorization": f"Bearer {secret}"},
+                    },
+                },
+            ),
+        ],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 1, "target_id": "page-1"}],
+    )
+    try:
+        try:
+            operations.derive_operations(run)
+        except operations.OperationReadError as exc:
+            assert "secret survived in derived artifact" in str(exc)
+        else:
+            raise AssertionError("a short lifted secret in an operation path must fail closed")
+        assert not (run / "operations").exists()
+        assert not (run / "steps" / "01-step_a" / "operations").exists()
+        assert not (run / "traffic" / "secrets.env").exists()
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
 def test_opaque_path_material_is_templated() -> None:
     opaque = [
         "A1-b2_C",
@@ -998,6 +1033,7 @@ test_step_regeneration_invalidates_siblings()
 test_graphql_variants_are_explicit()
 test_host_identity_and_openapi_names()
 test_secret_verification_distinguishes_names_from_values()
+test_short_lifted_secret_in_path_fails_closed()
 test_opaque_path_material_is_templated()
 test_equivalent_runs_keep_semantic_identity()
 test_scale_reconciliation()

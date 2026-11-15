@@ -1070,6 +1070,8 @@ SECRET_NAME_FIELDS = {
     "sets_cookies",
     "owner_candidates",
     "variants",
+    "x-uklok-observed-present",
+    "x-uklok-observed-on-all",
 }
 
 
@@ -1096,6 +1098,29 @@ def _graphql_secret_literal(text: str, secret: str) -> bool:
         if str(value) == secret:
             return True
     return False
+
+
+def _path_contains_secret(path: str, secret: str) -> bool:
+    if not secret:
+        return False
+    for raw_segment in path.split("/"):
+        segment = unquote(raw_segment)
+        if not segment or (segment.startswith("{") and segment.endswith("}")):
+            continue
+        if segment == secret or (len(secret) >= 4 and secret in segment):
+            return True
+    return False
+
+
+def _operation_identity_contains_secret(text: str, secret: str) -> bool:
+    if not text.startswith(("http|", "graphql|")):
+        return False
+    parts = text.split("|")
+    if len(parts) < 4:
+        return False
+    host, path = unquote(parts[2]), parts[3]
+    host_leak = host == secret or (len(secret) >= 4 and secret in host)
+    return host_leak or _path_contains_secret(path, secret)
 
 
 def _host_filename(host: str) -> str:
@@ -1163,6 +1188,11 @@ def verify_reading(run: Path) -> None:
                     if _graphql_secret_literal(text, secret):
                         raise OperationReadError(f"secret survived in derived artifact: {path}")
                     continue
+                if field == "path" and _path_contains_secret(text, secret):
+                    raise OperationReadError(f"secret survived in derived artifact: {path}")
+                if field in {"key", "operation_key", "context", "operation_keys", "distinct_operations", "shared_operations"}:
+                    if _operation_identity_contains_secret(text, secret):
+                        raise OperationReadError(f"secret survived in derived artifact: {path}")
                 if field in SECRET_NAME_FIELDS:
                     continue
                 if text == secret or (len(secret) >= 12 and secret in text):
