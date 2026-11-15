@@ -1105,6 +1105,8 @@ def _graphql_secret_literal(text: str, secret: str) -> bool:
             value = raw
         if str(value) == secret:
             return True
+        if isinstance(value, str) and len(secret) >= 4 and secret in value:
+            return True
     return False
 
 
