@@ -1113,12 +1113,17 @@ def _path_contains_secret(path: str, secret: str) -> bool:
 
 
 def _operation_identity_contains_secret(text: str, secret: str) -> bool:
-    if not text.startswith(("http|", "graphql|")):
-        return False
     parts = text.split("|")
-    if len(parts) < 4:
+    if text.startswith("http|"):
+        if len(parts) < 4:
+            return False
+        host, path = unquote(parts[2]), parts[3]
+    elif text.startswith("graphql|"):
+        if len(parts) < 3:
+            return False
+        host, path = unquote(parts[1]), parts[2]
+    else:
         return False
-    host, path = unquote(parts[2]), parts[3]
     host_leak = host == secret or (len(secret) >= 4 and secret in host)
     return host_leak or _path_contains_secret(path, secret)
 
