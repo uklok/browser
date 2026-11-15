@@ -41,6 +41,7 @@ python3 automations/_runtime/cli.py operations --help | grep -q -- '--step'
 
 python3 tests/traffic-boundaries.py
 python3 tests/operations-reading.py
+python3 tests/operations-hardening.py
 
 python3 tests/run-layout.py
 
