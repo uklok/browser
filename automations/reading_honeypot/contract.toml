@@ -1,0 +1,66 @@
+schema = "uklok.browser.automation/v1"
+id = "reading_honeypot"
+version = 1
+status = "ready"
+intent = "Drive the shared Chrome session through a local reading honeypot so operation readings can be verified from real CDP capture."
+module = "run.py"
+
+[trigger]
+description = "Manual live proof for derived operation reading. Requires the reading-honeypot compose service."
+
+[authority]
+allowed = [
+  "Open the fixed reading-honeypot health page in a browser tab.",
+  "Issue only the scripted reading-honeypot requests using synthetic fixture values.",
+]
+forbidden = [
+  "Call any origin other than the reading-honeypot aliases.",
+  "Inject real credentials, cookies, tokens, or account state into this fixture.",
+  "Change authenticated account state.",
+]
+
+[[inputs]]
+name = "trap"
+type = "string"
+required = false
+sensitive = false
+default = "none"
+description = "Live mode: none, graphql_comment, or field_name. Each non-none case must fail operation derivation closed on its own."
+
+[[preconditions]]
+id = "browser_ready"
+condition = "UKLOK Browser is healthy, CDP is reachable, and reading-honeypot is on the same Docker network."
+
+[[algorithm]]
+id = "open_honeypot"
+pseudocode = """
+OPEN the fixed reading-honeypot /health page in a new tab.
+WAIT until the page loads.
+READ document.title.
+"""
+checkpoint = "The tab title is reading honeypot."
+on_failure = "Stop. Chrome cannot reach the honeypot, so later requests would not be a live capture."
+resume = "safe"
+known_variants = []
+
+[[algorithm]]
+id = "exercise"
+pseudocode = """
+FROM the honeypot page, FETCH the redirect, stable-path, opaque-path, host, GraphQL, and bucket scenarios.
+CONSUME each response body before treating that request as complete, so Chrome emits terminal network evidence for the recorder.
+IF input.trap is graphql_comment, also POST the GraphQL-comment secret trap.
+IF input.trap is field_name, also POST the JSON-field-name secret trap.
+STOP if input.trap is not one of none, graphql_comment, or field_name.
+RETURN the per-request status list.
+"""
+checkpoint = "Every scripted honeypot request completed successfully and its response body was consumed."
+on_failure = "Stop and inspect the browser console and honeypot logs."
+resume = "safe"
+known_variants = []
+
+[success]
+condition = "Chrome opened the honeypot and every scripted scenario request completed."
+
+[failure]
+capture_screenshot = true
+agent_skill = ".agents/skills/browser-automation/SKILL.md"

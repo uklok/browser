@@ -1,0 +1,95 @@
+{
+  "schema": "uklok.browser.reading-honeypot-expectations/v1",
+  "target_steps": [
+    "open_honeypot",
+    "exercise"
+  ],
+  "allowed_host_suffix": ".reading.test",
+  "normal": {
+    "required_operation_counts": {
+      "http|GET|b.reading.test|/redirect/final": 1,
+      "http|GET|api.reading.test|/acknowledgements": 1,
+      "http|GET|api.reading.test|/GetCurrentUserProfile": 1,
+      "http|GET|api.reading.test|/challenge/{id}": 1,
+      "http|POST|api.reading.test|/items": 1,
+      "http|GET|api.reading.test|/case": 2,
+      "http|GET|port.reading.test|/default": 2,
+      "http|GET|api.reading.test|/bucket/{id}": 20
+    },
+    "redirect": {
+      "key": "http|GET|b.reading.test|/redirect/final",
+      "sets_cookies": [
+        "finalcookie"
+      ],
+      "credential_dependencies": [],
+      "redirects": 1
+    },
+    "graphql_required": [
+      {
+        "variant": "get-query",
+        "operation_name": "GetThing",
+        "parse_status": "parsed"
+      },
+      {
+        "variant": "json",
+        "operation_name": "GetThing",
+        "parse_status": "parsed"
+      },
+      {
+        "variant": "json-batch",
+        "operation_name": "A",
+        "parse_status": "parsed"
+      },
+      {
+        "variant": "json-batch",
+        "operation_name": "B",
+        "parse_status": "parsed"
+      },
+      {
+        "variant": "persisted-json",
+        "operation_name": "PersistedThing",
+        "parse_status": "parsed"
+      },
+      {
+        "variant": "raw-application-graphql",
+        "operation_name": "GetThing",
+        "parse_status": "parsed"
+      }
+    ],
+    "graphql_hash_only": {
+      "variant": "persisted-json",
+      "parse_status": "unparsed",
+      "persisted_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "reason": "persisted-query-document-and-operation-name-missing"
+    },
+    "batch_result_properties": {
+      "A": [
+        "data"
+      ],
+      "B": [
+        "errors"
+      ]
+    },
+    "forbidden_derived_text": [
+      "reading-honeypot-secret-1842",
+      "NonsensitiveOpaqueValue",
+      "jStkcFiTKsVzcqdhcpWMPdYC",
+      "intermediate"
+    ]
+  },
+  "fail_closed_cases": {
+    "graphql_comment": {
+      "required_capture_markers": [
+        "reading-honeypot-secret-1842",
+        "# note reading-honeypot-secret-1842"
+      ],
+      "error_contains": "secret survived in derived artifact"
+    },
+    "field_name": {
+      "required_capture_markers": [
+        "NonsensitiveOpaqueValue"
+      ],
+      "error_contains": "secret survived in derived artifact"
+    }
+  }
+}

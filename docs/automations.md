@@ -282,7 +282,7 @@ Captured traffic can be studied explicitly without replaying requests or modifyi
 ./bin/browser-automation operations .runs/<automation>/<run-id> --step <id>
 ~~~
 
-The reading consumes only the existing `traffic/checkpoints.jsonl` index plus recorder evidence. A call belongs to the checkpoint containing its **opening** `requestWillBeSent` sequence. Redirects keep one request identity and final URL; later response/body facts stay attached by request identity even when their sequence falls in another checkpoint. A response whose opening event is absent remains unattributed.
+The reading consumes only the existing `traffic/checkpoints.jsonl` index plus recorder evidence. A call belongs to the checkpoint containing its **opening** `requestWillBeSent` sequence. Redirects keep one request identity and opening-checkpoint ownership, while every hop replaces request-only facts such as method, URL, headers and body; a final cross-origin GET therefore cannot inherit the opening POST's credentials or schema. Later response/body facts stay attached by request identity even when their sequence falls in another checkpoint. A response whose opening event is absent remains unattributed. If overlapping or duplicate checkpoint ranges make more than one boundary a valid owner, the call is explicitly ambiguous and remains unattributed rather than selecting a tie-break.
 
 The derived surface is deterministic and observed-only:
 
@@ -300,12 +300,18 @@ The derived surface is deterministic and observed-only:
             │   ├── operations.json
             │   └── observed-schema.json
             └── openapi/
-                └── <host>.json
+                └── <canonical-host>-<sha256>.json
 ~~~
 
-REST operations group by method + host + generic templated path. GraphQL keeps a separate semantic identity by operation name (or a stable anonymous-operation hash), so operations sharing one POST endpoint do not collapse into one inferred behavior. JSON request/response schemas are inferred only from observed content; missing bodies remain `unobserved`. Field/query presence is recorded as observation metadata and is not promoted to contract-level requiredness from one captured run. OpenAPI and GraphQL outputs explicitly describe an observed surface, not complete server documentation.
+REST operations group by method + canonical host + generic templated path. Host case is normalized and default ports are removed before identity; OpenAPI filenames include a deterministic host hash so distinct canonical hosts cannot collide on case-insensitive or punctuation-normalizing filesystems. Path templating also treats generic high-entropy opaque segments as dynamic evidence without provider-specific grammars.
 
-Credential/session values are lifted out of the reading into `traffic/secrets.env`, which is inside the already-gitignored run. Derived artifacts retain dependency names plus placeholders, cookie names and response-set cookie names, but not the concrete lifted values. The run index also emits the coarsest credential scope justified by the observed calls (global, domain, operation, goal, or partial) instead of treating one incident header set as a reusable rule. The reading fails closed if a lifted value survives in derived JSON.
+GraphQL keeps a separate semantic identity by understood transport variant plus operation identity. The reader understands GET `?query=`, raw `application/graphql`, JSON batches, and named persisted queries without a document. Hash-only persisted queries stay GraphQL evidence with a stable hash-derived identity but remain explicitly `unparsed` because no document or operation name was observed. The same operation name observed through different supported variants stays distinct instead of inheriting one misleading method/encoding. Batch entries become individual logical operations and their response-array evidence is matched by entry index. Other GraphQL-shaped traffic that cannot be understood is likewise retained as explicit `unparsed` evidence rather than being silently downgraded to an apparently complete ordinary HTTP operation.
+
+JSON request/response schemas are inferred only from observed content; missing bodies remain `unobserved`. Field/query presence is recorded as observation metadata and is not promoted to contract-level requiredness from one captured run. OpenAPI and GraphQL outputs explicitly describe an observed surface, not complete server documentation.
+
+Credential/session values are lifted out of the reading into `traffic/secrets.env`, which is inside the already-gitignored run. Derived artifacts retain dependency names plus placeholders, cookie names and response-set cookie names, but not the concrete lifted values. Leak verification distinguishes source values from harmless equal schema/field/header names, while still failing closed if a lifted value survives in a value-bearing derived field. The run index also emits the coarsest credential scope justified by the observed calls (global, domain, operation, goal, or partial) instead of treating one incident header set as a reusable rule.
+
+Every derivation is built in a hidden staging tree, integrity-checked there, and only then published. `operations/index.json` is the generation commit marker; every published JSON artifact and the derived `traffic/secrets.env` carry the same deterministic generation identity. The generation includes a fingerprint of the reader implementation as well as the captured evidence and selected scope, so changed reader behavior cannot reuse an old stamp. Verification rejects a mixed-generation secret store as well as mixed JSON. A failed verification cannot replace the previous published reading. A `--step` reread publishes the requested step under a new generation and invalidates sibling step-operation directories, so an index cannot appear coherent with stale artifacts from another generation.
 
 For one-invocation capture plus reading, opt in explicitly:
 

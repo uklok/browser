@@ -41,6 +41,7 @@ Treat these as current implementation constraints unless the task explicitly cha
 - when `--capture-traffic` is active, checkpoint traffic settling belongs to the shared runner, not individual automation sleeps; degraded traffic evidence is recorded without silently redefining functional success;
 - the raw traffic recorder owns CDP facts and may append bounded response-body observations for operation-shaped responses; body acquisition closes through that same settle owner and must never be represented as a forged Chrome event;
 - derived operation readings use the existing checkpoint index: ownership follows the opening `requestWillBeSent` sequence, while later response/body evidence joins by request identity; do not invent a second traffic split;
+- published operation readings are generation-coherent: derive in staging, verify before publish, and invalidate stale sibling artifacts on step-scoped rereads; consumers treat `operations/index.json` as the generation commit marker;
 - operation readings are observed reverse-engineering evidence, not executable clients or automation knowledge; concrete credential/session values belong only in the run-local `traffic/secrets.env`, and derived output must fail closed on secret leakage.
 
 ## Where truth lives
