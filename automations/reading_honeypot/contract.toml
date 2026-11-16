@@ -20,12 +20,12 @@ forbidden = [
 ]
 
 [[inputs]]
-name = "fail_closed"
-type = "bool"
+name = "trap"
+type = "string"
 required = false
 sensitive = false
-default = false
-description = "Also send deliberate secret-publication traps; the operation reading must then fail closed."
+default = "none"
+description = "Live mode: none, graphql_comment, or field_name. Each non-none case must fail operation derivation closed on its own."
 
 [[preconditions]]
 id = "browser_ready"
@@ -47,7 +47,9 @@ known_variants = []
 id = "exercise"
 pseudocode = """
 FROM the honeypot page, FETCH the redirect, stable-path, opaque-path, host, GraphQL, and bucket scenarios.
-IF input.fail_closed, also POST the deliberate GraphQL-comment and JSON-field-name secret traps.
+IF input.trap is graphql_comment, also POST the GraphQL-comment secret trap.
+IF input.trap is field_name, also POST the JSON-field-name secret trap.
+STOP if input.trap is not one of none, graphql_comment, or field_name.
 RETURN the per-request status list.
 """
 checkpoint = "Every scripted honeypot request completed with a successful HTTP response."

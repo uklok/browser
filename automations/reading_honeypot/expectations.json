@@ -77,12 +77,19 @@
       "intermediate"
     ]
   },
-  "fail_closed": {
-    "required_capture_markers": [
-      "reading-honeypot-secret-1842",
-      "NonsensitiveOpaqueValue",
-      "# note reading-honeypot-secret-1842"
-    ],
-    "error_contains": "secret survived in derived artifact"
+  "fail_closed_cases": {
+    "graphql_comment": {
+      "required_capture_markers": [
+        "reading-honeypot-secret-1842",
+        "# note reading-honeypot-secret-1842"
+      ],
+      "error_contains": "secret survived in derived artifact"
+    },
+    "field_name": {
+      "required_capture_markers": [
+        "NonsensitiveOpaqueValue"
+      ],
+      "error_contains": "secret survived in derived artifact"
+    }
   }
 }

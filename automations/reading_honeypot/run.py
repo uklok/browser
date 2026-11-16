@@ -19,14 +19,20 @@ def step_open_honeypot(ctx):
 
 
 def step_exercise(ctx):
-    fail_closed = bool(ctx["inputs"]["fail_closed"])
+    trap = str(ctx["inputs"]["trap"] or "none")
+    allowed_traps = {"none", "graphql_comment", "field_name"}
+    if trap not in allowed_traps:
+        return {
+            "ok": False,
+            "observed": {"error": f"unsupported trap: {trap}", "allowed": sorted(allowed_traps)},
+        }
     observed = js(
         """
         (async () => {
           const secret = %s;
           const fieldSecret = %s;
           const opaque = %s;
-          const failClosed = %s;
+          const trap = %s;
           const calls = [];
           async function record(name, run) {
             try {
@@ -83,12 +89,14 @@ def step_exercise(ctx):
           for (let n = 1000; n < 1020; n += 1) {
             await record("bucket-" + n, () => fetch("http://api.reading.test/bucket/" + n));
           }
-          if (failClosed) {
+          if (trap === "graphql_comment") {
             await record("graphql-comment", () => fetch("http://api.reading.test/graphql", {
               method: "POST",
               headers: {"Authorization": "Bearer " + secret, "Content-Type": "application/json"},
               body: JSON.stringify({operationName: "Echo", query: "query Echo { thing { id } } # note " + secret}),
             }));
+          }
+          if (trap === "field_name") {
             await record("field-name", () => fetch("http://api.reading.test/items", {
               method: "POST",
               headers: {"Authorization": "Bearer " + fieldSecret, "Content-Type": "application/json"},
@@ -102,16 +110,16 @@ def step_exercise(ctx):
             json.dumps(TEST_SECRET),
             json.dumps(FIELD_SECRET),
             json.dumps(OPAQUE_TOKEN),
-            "true" if fail_closed else "false",
+            json.dumps(trap),
             "a" * 64,
             "b" * 64,
         )
     )
-    expected_count = 37 if fail_closed else 35
+    expected_count = 35 if trap == "none" else 36
     ok = (
         isinstance(observed, list)
         and len(observed) == expected_count
-        and all(bool(item.get("ok")) for item in observed if isinstance(item, dict))
+        and all(isinstance(item, dict) and bool(item.get("ok")) for item in observed)
     )
     return {
         "ok": ok,

@@ -75,19 +75,27 @@ python3 tests/reading-honeypot-live.py \
 
 The verifier is the check surface: it reads the honeypot checkpoint target ID, builds a temporary target-only view of the shared-browser capture, derives operations there, and asserts the reviewed expectations in `automations/reading_honeypot/expectations.json`. It never rewrites the raw capture. A normal run must prove the redirect, stable/opaque paths, GraphQL variants and batch result provenance, canonical host observations, bucket grouping, reconciliation, and absence of fixture secrets.
 
-The deliberate fail-closed path is a separate run:
+The two deliberate fail-closed pressures are separate runs so one protection cannot mask a regression in the other:
 
 ```bash
 BU_CDP_URL=http://127.0.0.1:${CDP_HOST_PORT:-9222} \
   ./bin/browser-automation run reading_honeypot \
     --capture-traffic \
-    --input fail_closed=true
+    --input trap=graphql_comment
 
 python3 tests/reading-honeypot-live.py \
-  .runs/reading_honeypot/<fail-closed-run-id>
+  .runs/reading_honeypot/<graphql-comment-run-id>
+
+BU_CDP_URL=http://127.0.0.1:${CDP_HOST_PORT:-9222} \
+  ./bin/browser-automation run reading_honeypot \
+    --capture-traffic \
+    --input trap=field_name
+
+python3 tests/reading-honeypot-live.py \
+  .runs/reading_honeypot/<field-name-run-id>
 ```
 
-That run is successful at the browser checkpoint but its **operation derivation must fail in staging** because the captured requests deliberately place synthetic lifted values in a GraphQL comment and a JSON field name. The verifier confirms those traps were actually captured and that no derived index, step operations, or `traffic/secrets.env` were published.
+Each browser run must succeed, and each operation derivation must independently **fail in staging** for the expected secret-publication reason. The verifier first proves that run's deliberate trap was actually captured, then confirms that no derived index, step operations, or `traffic/secrets.env` were published.
 
 Chrome reaches `a.reading.test`, `b.reading.test`, `api.reading.test`, and `port.reading.test` only on the Compose network; the honeypot publishes no host port. Raw recorder evidence can still contain unrelated open-tab traffic and credentials, remains gitignored under `.runs/`, and should be deleted when the proof is no longer needed. Do not manually filter it for acceptance: use the target-isolating verifier above.
 

@@ -109,28 +109,37 @@ def validate_config() -> dict[str, Any]:
     if len(identities) != len(set(identities)):
         raise VerificationError("graphql_required contains duplicate identities")
 
-    fail_closed = expected.get("fail_closed")
-    if not isinstance(fail_closed, dict) or not isinstance(fail_closed.get("error_contains"), str):
-        raise VerificationError("fail_closed.error_contains is required")
+    fail_cases = expected.get("fail_closed_cases")
+    if not isinstance(fail_cases, dict) or set(fail_cases) != {"graphql_comment", "field_name"}:
+        raise VerificationError("fail_closed_cases must define graphql_comment and field_name")
+    for name, case in fail_cases.items():
+        if not isinstance(case, dict) or not isinstance(case.get("error_contains"), str):
+            raise VerificationError(f"fail_closed_cases.{name}.error_contains is required")
+        markers_for_case = case.get("required_capture_markers")
+        if not isinstance(markers_for_case, list) or not markers_for_case:
+            raise VerificationError(f"fail_closed_cases.{name}.required_capture_markers is required")
 
     contract = tomllib.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
     inputs = {item.get("name"): item for item in contract.get("inputs", []) if isinstance(item, dict)}
-    if set(inputs) != {"fail_closed"}:
-        raise VerificationError("reading_honeypot must expose only the fail_closed test-mode input")
-    if inputs["fail_closed"].get("type") != "bool" or inputs["fail_closed"].get("default") is not False:
-        raise VerificationError("fail_closed must be a bool defaulting to false")
+    if set(inputs) != {"trap"}:
+        raise VerificationError("reading_honeypot must expose only the trap test-mode input")
+    if inputs["trap"].get("type") != "string" or inputs["trap"].get("default") != "none":
+        raise VerificationError("trap must be a string defaulting to 'none'")
 
     module = load_automation_module()
     markers = set(normal.get("forbidden_derived_text") or [])
-    required_markers = set(fail_closed.get("required_capture_markers") or [])
+    graphql_markers = set(fail_cases["graphql_comment"].get("required_capture_markers") or [])
+    field_markers = set(fail_cases["field_name"].get("required_capture_markers") or [])
     for name in ("TEST_SECRET", "FIELD_SECRET", "OPAQUE_TOKEN"):
         value = getattr(module, name, None)
         if not isinstance(value, str) or not value:
             raise VerificationError(f"run.py must define non-empty {name}")
     if module.TEST_SECRET not in markers or module.OPAQUE_TOKEN not in markers:
         raise VerificationError("normal leak expectations must track the synthetic secret and opaque token")
-    if module.TEST_SECRET not in required_markers or module.FIELD_SECRET not in required_markers:
-        raise VerificationError("fail-closed capture markers must track both deliberate secret traps")
+    if module.TEST_SECRET not in graphql_markers:
+        raise VerificationError("graphql_comment capture markers must track TEST_SECRET")
+    if module.FIELD_SECRET not in field_markers:
+        raise VerificationError("field_name capture markers must track FIELD_SECRET")
 
     return expected
 
@@ -323,8 +332,10 @@ def assert_normal(run: Path, index: dict[str, Any], expected: dict[str, Any]) ->
     }
 
 
-def assert_fail_closed(run: Path, expected: dict[str, Any]) -> dict[str, Any]:
-    fail_spec = expected["fail_closed"]
+def assert_fail_closed(run: Path, expected: dict[str, Any], trap: str) -> dict[str, Any]:
+    fail_spec = expected["fail_closed_cases"].get(trap)
+    if not isinstance(fail_spec, dict):
+        raise VerificationError(f"unknown fail-closed trap: {trap!r}")
     capture_text = (run / "traffic" / "events.jsonl").read_text(encoding="utf-8")
     for marker in fail_spec["required_capture_markers"]:
         if marker not in capture_text:
@@ -348,6 +359,7 @@ def assert_fail_closed(run: Path, expected: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "derive": "failed-closed",
+        "trap": trap,
         "error_contains": fail_spec["error_contains"],
         "published": False,
     }
@@ -368,23 +380,24 @@ def verify_run(run: Path, expected: dict[str, Any]) -> dict[str, Any]:
         )
 
     inputs = manifest.get("inputs") or {}
-    fail_closed = inputs.get("fail_closed")
-    if not isinstance(fail_closed, bool):
-        raise VerificationError("run.json does not record a boolean fail_closed input")
+    trap = inputs.get("trap")
+    if trap not in {"none", "graphql_comment", "field_name"}:
+        raise VerificationError(f"run.json records an unsupported trap: {trap!r}")
 
     with tempfile.TemporaryDirectory(prefix="reading-honeypot-verify-") as raw_tmp:
         target_run = Path(raw_tmp)
         isolation = materialize_target_view(run, expected, target_run)
         result = (
-            assert_fail_closed(target_run, expected)
-            if fail_closed
-            else assert_normal(target_run, operations.derive_operations(target_run), expected)
+            assert_normal(target_run, operations.derive_operations(target_run), expected)
+            if trap == "none"
+            else assert_fail_closed(target_run, expected, str(trap))
         )
 
     return {
         "schema": "uklok.browser.reading-honeypot-verification/v1",
         "source_run": str(run),
-        "mode": "fail-closed" if fail_closed else "published",
+        "mode": "published" if trap == "none" else "fail-closed",
+        "trap": trap,
         "target_isolation": isolation,
         "result": result,
     }
