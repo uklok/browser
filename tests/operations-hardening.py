@@ -1046,6 +1046,54 @@ def test_host_identity_and_openapi_names() -> None:
         shutil.rmtree(run, ignore_errors=True)
 
 
+
+def test_origin_scheme_tokens_are_not_treated_as_secret_leaks() -> None:
+    run = make_run(
+        ["step_a"],
+        [
+            raw(
+                1,
+                "Network.requestWillBeSent",
+                "rest-scheme-token",
+                {
+                    "type": "XHR",
+                    "request": {
+                        "method": "GET",
+                        "url": "https://api.example/items",
+                        "headers": {"Authorization": "Bearer https"},
+                    },
+                },
+            ),
+            raw(
+                2,
+                "Network.requestWillBeSent",
+                "graphql-scheme-token",
+                {
+                    "type": "Fetch",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://gql.example/graphql",
+                        "headers": {
+                            "Authorization": "Bearer http",
+                            "Content-Type": "application/json",
+                        },
+                        "postData": json.dumps({"query": "query SchemeToken { viewer { id } }"}),
+                    },
+                },
+            ),
+        ],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 2, "target_id": "page-1"}],
+    )
+    try:
+        index = operations.derive_operations(run)
+        operations.verify_reading(run)
+        assert "http|GET|https://api.example|/items" in index["operation_keys"]
+        assert any(key.startswith("graphql|https://gql.example|/graphql|") for key in index["operation_keys"])
+        assert index["attributed_count"] == 2
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
 def test_secret_verification_distinguishes_names_from_values() -> None:
     secret = "Authorization"
     run = make_run(
@@ -1660,6 +1708,7 @@ test_step_regeneration_invalidates_siblings()
 test_graphql_variants_are_explicit()
 test_repeated_graphql_batch_name_keeps_entry_evidence()
 test_host_identity_and_openapi_names()
+test_origin_scheme_tokens_are_not_treated_as_secret_leaks()
 test_secret_verification_distinguishes_names_from_values()
 test_lifted_secret_inside_graphql_literal_fails_closed()
 test_lifted_secret_inside_graphql_comment_fails_closed()
