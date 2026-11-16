@@ -1,0 +1,25 @@
+services:
+  reading-honeypot:
+    build:
+      context: ./honeypot
+    image: uklok/reading-honeypot:local
+    restart: unless-stopped
+    expose:
+      - "80"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1/health', timeout=2).read()"
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 1s
+    networks:
+      default:
+        aliases:
+          - a.reading.test
+          - b.reading.test
+          - api.reading.test
+          - port.reading.test

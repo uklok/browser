@@ -55,6 +55,50 @@ docker compose \
 
 Do not add `--volumes` if you want to preserve the named profile volume.
 
+## Live operation-reading capture
+
+The fixture suites build CDP events in process. This companion path sends the same pressure scenarios through the running shared Chrome session and then verifies the captured operation reading.
+
+```bash
+docker compose \
+  -f compose.yaml \
+  -f local.yaml \
+  -f honeypot.yaml \
+  up -d --no-deps --build reading-honeypot
+
+BU_CDP_URL=http://127.0.0.1:${CDP_HOST_PORT:-9222} \
+  ./bin/browser-automation run reading_honeypot --capture-traffic
+
+python3 tests/reading-honeypot-live.py \
+  .runs/reading_honeypot/<run-id>
+```
+
+The verifier is the check surface: it reads the honeypot checkpoint target ID, requires every honeypot traffic boundary to settle `quiet`, builds a temporary target-only view of the shared-browser capture, derives operations there, and asserts the reviewed expectations in `automations/reading_honeypot/expectations.json`. It never rewrites the raw capture. The automation consumes every scripted response body before completing the checkpoint so Chrome must produce terminal network evidence and the recorder can acquire response bodies. A normal run must prove the redirect, stable/opaque paths, GraphQL variants and batch result provenance, canonical host observations, bucket grouping, reconciliation, and absence of fixture secrets.
+
+The two deliberate fail-closed pressures are separate runs so one protection cannot mask a regression in the other:
+
+```bash
+BU_CDP_URL=http://127.0.0.1:${CDP_HOST_PORT:-9222} \
+  ./bin/browser-automation run reading_honeypot \
+    --capture-traffic \
+    --input trap=graphql_comment
+
+python3 tests/reading-honeypot-live.py \
+  .runs/reading_honeypot/<graphql-comment-run-id>
+
+BU_CDP_URL=http://127.0.0.1:${CDP_HOST_PORT:-9222} \
+  ./bin/browser-automation run reading_honeypot \
+    --capture-traffic \
+    --input trap=field_name
+
+python3 tests/reading-honeypot-live.py \
+  .runs/reading_honeypot/<field-name-run-id>
+```
+
+Each browser run must succeed, and each operation derivation must independently **fail in staging** for the expected secret-publication reason. The verifier first proves that run's deliberate trap was actually captured, then confirms that no derived index, step operations, or `traffic/secrets.env` were published.
+
+Chrome reaches `a.reading.test`, `b.reading.test`, `api.reading.test`, and `port.reading.test` only on the Compose network; the honeypot publishes no host port. Raw recorder evidence can still contain unrelated open-tab traffic and credentials, remains gitignored under `.runs/`, and should be deleted when the proof is no longer needed. Do not manually filter it for acceptance: use the target-isolating verifier above.
+
 ## Canonical container-network deployment
 
 `compose.yaml` publishes no host ports:
