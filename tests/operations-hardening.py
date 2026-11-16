@@ -154,14 +154,14 @@ def test_redirect_replaces_request_facts() -> None:
     )
     try:
         index = operations.derive_operations(run)
-        key = "http|GET|b.example|/final"
+        key = "http|GET|https://b.example|/final"
         assert index["operation_keys"] == [key]
         assert index["steps"]["step_a"]["operation_keys"] == [key]
         assert index["steps"]["step_b"]["operation_keys"] == []
         step = run / "steps" / "01-step_a" / "operations"
         auth = read(step / "auth.json")
         assert auth["dependencies"] == []
-        openapi = read(step / "openapi" / operations._host_filename("b.example"))
+        openapi = read(step / "openapi" / operations._host_filename("https://b.example"))
         final = openapi["paths"]["/final"]["get"]
         assert "requestBody" not in final
         assert final["x-uklok-credential-dependencies"] == []
@@ -248,7 +248,7 @@ def test_late_redirect_response_extra_info_does_not_contaminate_final_hop() -> N
         operations.derive_operations(run)
         step = run / "steps" / "01-step_a" / "operations"
         endpoints = read(step / "endpoints.json")["operations"]
-        final = next(item for item in endpoints if item["key"] == "http|GET|b.example|/final")
+        final = next(item for item in endpoints if item["key"] == "http|GET|https://b.example|/final")
         assert final["response"]["sets_cookies"] == ["finalcookie"]
         derived_json = b"\n".join(
             value
@@ -323,7 +323,7 @@ def test_final_response_extra_info_survives_missing_redirect_extra() -> None:
     )
     try:
         index = operations.derive_operations(run)
-        assert index["operation_keys"] == ["http|GET|b.example|/final"]
+        assert index["operation_keys"] == ["http|GET|https://b.example|/final"]
         endpoints = read(
             run / "steps" / "01-step_a" / "operations" / "endpoints.json"
         )["operations"]
@@ -891,7 +891,7 @@ def test_graphql_variants_are_explicit() -> None:
         assert index["total_observed_calls"] == 6
         assert index["logical_operation_observations"] == 7
         assert index["integrity"]["reconciles"] is True
-        assert all(key.startswith("graphql|gql.example|/graphql|") for key in index["operation_keys"])
+        assert all(key.startswith("graphql|https://gql.example|/graphql|") for key in index["operation_keys"])
 
         records = read(run / "steps" / "01-step_a" / "operations" / "graphql" / "operations.json")["operations"]
         by_variant_name = {
@@ -984,7 +984,7 @@ def test_repeated_graphql_batch_name_keeps_entry_evidence() -> None:
     )
     try:
         index = operations.derive_operations(run)
-        key = "graphql|gql.example|/graphql|json-batch|RepeatedThing"
+        key = "graphql|https://gql.example|/graphql|json-batch|RepeatedThing"
         assert index["total_observed_calls"] == 1
         assert index["logical_operation_observations"] == 2
         assert index["operation_counts"][key] == 2
@@ -1026,22 +1026,70 @@ def test_host_identity_and_openapi_names() -> None:
     try:
         index = operations.derive_operations(run)
         keys = index["operation_keys"]
-        assert "http|GET|api.example|/case" in keys
-        assert "http|GET|port.example|/default" in keys
+        assert "http|GET|https://api.example|/case" in keys
+        assert "http|GET|http://port.example|/default" in keys
         assert all("API.Example" not in key and ":443" not in key and ":80" not in key for key in keys)
-        assert index["operation_counts"]["http|GET|api.example|/case"] == 2
-        assert index["operation_counts"]["http|GET|port.example|/default"] == 2
+        assert index["operation_counts"]["http|GET|https://api.example|/case"] == 2
+        assert index["operation_counts"]["http|GET|http://port.example|/default"] == 2
 
         openapi_dir = run / "steps" / "01-step_a" / "operations" / "openapi"
         files = sorted(openapi_dir.glob("*.json"))
         assert len(files) == 4
         assert len({path.name.lower() for path in files}) == 4
         weird_names = {
-            operations._host_filename("weird.example:8443"),
-            operations._host_filename("weird.example_8443"),
+            operations._host_filename("https://weird.example:8443"),
+            operations._host_filename("https://weird.example_8443"),
         }
         assert len(weird_names) == 2
         assert all((openapi_dir / name).is_file() for name in weird_names)
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
+
+def test_origin_scheme_tokens_are_not_treated_as_secret_leaks() -> None:
+    run = make_run(
+        ["step_a"],
+        [
+            raw(
+                1,
+                "Network.requestWillBeSent",
+                "rest-scheme-token",
+                {
+                    "type": "XHR",
+                    "request": {
+                        "method": "GET",
+                        "url": "https://api.example/items",
+                        "headers": {"Authorization": "Bearer https"},
+                    },
+                },
+            ),
+            raw(
+                2,
+                "Network.requestWillBeSent",
+                "graphql-scheme-token",
+                {
+                    "type": "Fetch",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://gql.example/graphql",
+                        "headers": {
+                            "Authorization": "Bearer http",
+                            "Content-Type": "application/json",
+                        },
+                        "postData": json.dumps({"query": "query SchemeToken { viewer { id } }"}),
+                    },
+                },
+            ),
+        ],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 2, "target_id": "page-1"}],
+    )
+    try:
+        index = operations.derive_operations(run)
+        operations.verify_reading(run)
+        assert "http|GET|https://api.example|/items" in index["operation_keys"]
+        assert any(key.startswith("graphql|https://gql.example|/graphql|") for key in index["operation_keys"])
+        assert index["attributed_count"] == 2
     finally:
         shutil.rmtree(run, ignore_errors=True)
 
@@ -1307,9 +1355,9 @@ def test_opaque_path_material_is_templated() -> None:
     )
     try:
         index = operations.derive_operations(run)
-        assert "http|GET|api.example|/challenge/{id}" in index["operation_keys"]
-        assert "http|GET|api.example|/session/{id}" in index["operation_keys"]
-        assert index["operation_counts"]["http|GET|api.example|/challenge/{id}"] == 3
+        assert "http|GET|https://api.example|/challenge/{id}" in index["operation_keys"]
+        assert "http|GET|https://api.example|/session/{id}" in index["operation_keys"]
+        assert index["operation_counts"]["http|GET|https://api.example|/challenge/{id}"] == 3
         derived = b"\n".join(snapshot(run).values())
         for value in opaque:
             assert value.encode() not in derived
@@ -1342,10 +1390,10 @@ def test_stable_alphabetic_paths_are_not_templated() -> None:
     try:
         index = operations.derive_operations(run)
         assert index["operation_keys"] == [
-            "http|GET|api.example|/GetCurrentUserProfile",
-            "http|GET|api.example|/acknowledgements",
+            "http|GET|https://api.example|/GetCurrentUserProfile",
+            "http|GET|https://api.example|/acknowledgements",
         ]
-        assert "http|GET|api.example|/{id}" not in index["operation_keys"]
+        assert "http|GET|https://api.example|/{id}" not in index["operation_keys"]
     finally:
         shutil.rmtree(run, ignore_errors=True)
 
@@ -1435,7 +1483,7 @@ def equivalent_run(
 def semantic_reading(run: Path) -> dict:
     step = run / "steps" / "01-step_a" / "operations"
     endpoints = read(step / "endpoints.json")["operations"]
-    openapi = read(step / "openapi" / operations._host_filename("api.example"))
+    openapi = read(step / "openapi" / operations._host_filename("https://api.example"))
     gql_model = read(step / "graphql" / "observed-schema.json")["operations"]
     auth = read(step / "auth.json")["dependencies"]
     return {
@@ -1475,9 +1523,9 @@ def test_equivalent_runs_keep_semantic_identity() -> None:
         index_a = operations.derive_operations(run_a)
         index_b = operations.derive_operations(run_b)
         expected_keys = [
-            "graphql|api.example|/graphql|json|GetThing",
-            "http|GET|api.example|/users/{id}",
-            "http|POST|api.example|/widgets",
+            "graphql|https://api.example|/graphql|json|GetThing",
+            "http|GET|https://api.example|/users/{id}",
+            "http|POST|https://api.example|/widgets",
         ]
         assert index_a["operation_keys"] == index_b["operation_keys"] == expected_keys
         assert semantic_reading(run_a) == semantic_reading(run_b)
@@ -1558,6 +1606,94 @@ def test_scale_reconciliation() -> None:
         shutil.rmtree(run, ignore_errors=True)
 
 
+
+def test_origin_identity_scopes_operations_openapi_and_credentials() -> None:
+    urls = [
+        "http://API.Example/items",
+        "http://api.example:80/items",
+        "https://API.Example/items",
+        "https://api.example:443/items",
+    ]
+    events = [
+        raw(seq, "Network.requestWillBeSent", f"origin-{seq}", {
+            "type": "XHR",
+            "request": {
+                "method": "GET", "url": url,
+                "headers": {"Authorization": "Bearer http-secret" if url.startswith("http://") else "Bearer https-secret"},
+            },
+        })
+        for seq, url in enumerate(urls, 1)
+    ]
+    run = make_run(
+        ["step_a"], events,
+        [{"step": "step_a", "from_seq": 1, "through_seq": 4, "target_id": "page-1"}],
+    )
+    try:
+        index = operations.derive_operations(run)
+        assert index["operation_counts"] == {
+            "http|GET|http://api.example|/items": 2,
+            "http|GET|https://api.example|/items": 2,
+        }
+        assert index["attributed_count"] == 4
+        scoped = [r for r in index["credential_rules"] if r["name"] == "Authorization"]
+        assert {r["context"] for r in scoped} == {"http://api.example", "https://api.example"}
+        assert all(r["scope"] == "domain" and r["observed_calls"] == 2 for r in scoped)
+        assert len({tuple(r["placeholders"]) for r in scoped}) == 2
+
+        directory = run / "steps" / "01-step_a" / "operations" / "openapi"
+        files = sorted(directory.glob("*.json"))
+        assert len(files) == 2
+        assert len({p.name.lower() for p in files}) == 2
+        for origin in ("http://api.example", "https://api.example"):
+            document = read(directory / operations._host_filename(origin))
+            assert document["servers"] == [{"url": origin}]
+            assert document["paths"]["/items"]["get"]["x-uklok-observed-count"] == 2
+        operations.verify_reading(run)
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
+def test_ownerless_checkpoint_boundaries_fail_closed() -> None:
+    for missing in ({}, {"step": None}, {"step": ""}, {"step": "   "}):
+        run = make_run(
+            ["step_a"],
+            [raw(2, "Network.requestWillBeSent", "ownerless", {
+                "type": "XHR", "request": {
+                    "method": "GET", "url": "https://api.example/items", "headers": {},
+                },
+            })],
+            [{**missing, "from_seq": 1, "through_seq": 3, "target_id": "page-1"}],
+        )
+        try:
+            index = operations.derive_operations(run)
+            assert index["attributed_count"] == 0
+            assert index["unattributed_count"] == 1
+            assert index["unattributed"][0]["attribution"] == "unattributed"
+            assert index["unattributed"][0]["owner_candidates"] == []
+            assert "None" not in index["steps"]
+        finally:
+            shutil.rmtree(run, ignore_errors=True)
+
+    run = make_run(
+        ["step_a"],
+        [raw(2, "Network.requestWillBeSent", "legacy", {
+            "type": "XHR", "request": {
+                "method": "GET", "url": "https://api.example/items", "headers": {},
+            },
+        })],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 3, "target_id": "page-1"}],
+    )
+    try:
+        index = operations.derive_operations(run)
+        assert index["attributed_count"] == 1
+        assert index["unattributed_count"] == 0
+        assert "step_a" in index["steps"]
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
+test_origin_identity_scopes_operations_openapi_and_credentials()
+test_ownerless_checkpoint_boundaries_fail_closed()
 test_redirect_replaces_request_facts()
 test_late_redirect_response_extra_info_does_not_contaminate_final_hop()
 test_final_response_extra_info_survives_missing_redirect_extra()
@@ -1572,6 +1708,7 @@ test_step_regeneration_invalidates_siblings()
 test_graphql_variants_are_explicit()
 test_repeated_graphql_batch_name_keeps_entry_evidence()
 test_host_identity_and_openapi_names()
+test_origin_scheme_tokens_are_not_treated_as_secret_leaks()
 test_secret_verification_distinguishes_names_from_values()
 test_lifted_secret_inside_graphql_literal_fails_closed()
 test_lifted_secret_inside_graphql_comment_fails_closed()
