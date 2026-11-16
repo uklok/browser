@@ -154,14 +154,14 @@ def test_redirect_replaces_request_facts() -> None:
     )
     try:
         index = operations.derive_operations(run)
-        key = "http|GET|b.example|/final"
+        key = "http|GET|https://b.example|/final"
         assert index["operation_keys"] == [key]
         assert index["steps"]["step_a"]["operation_keys"] == [key]
         assert index["steps"]["step_b"]["operation_keys"] == []
         step = run / "steps" / "01-step_a" / "operations"
         auth = read(step / "auth.json")
         assert auth["dependencies"] == []
-        openapi = read(step / "openapi" / operations._host_filename("b.example"))
+        openapi = read(step / "openapi" / operations._host_filename("https://b.example"))
         final = openapi["paths"]["/final"]["get"]
         assert "requestBody" not in final
         assert final["x-uklok-credential-dependencies"] == []
@@ -248,7 +248,7 @@ def test_late_redirect_response_extra_info_does_not_contaminate_final_hop() -> N
         operations.derive_operations(run)
         step = run / "steps" / "01-step_a" / "operations"
         endpoints = read(step / "endpoints.json")["operations"]
-        final = next(item for item in endpoints if item["key"] == "http|GET|b.example|/final")
+        final = next(item for item in endpoints if item["key"] == "http|GET|https://b.example|/final")
         assert final["response"]["sets_cookies"] == ["finalcookie"]
         derived_json = b"\n".join(
             value
@@ -323,7 +323,7 @@ def test_final_response_extra_info_survives_missing_redirect_extra() -> None:
     )
     try:
         index = operations.derive_operations(run)
-        assert index["operation_keys"] == ["http|GET|b.example|/final"]
+        assert index["operation_keys"] == ["http|GET|https://b.example|/final"]
         endpoints = read(
             run / "steps" / "01-step_a" / "operations" / "endpoints.json"
         )["operations"]
@@ -891,7 +891,7 @@ def test_graphql_variants_are_explicit() -> None:
         assert index["total_observed_calls"] == 6
         assert index["logical_operation_observations"] == 7
         assert index["integrity"]["reconciles"] is True
-        assert all(key.startswith("graphql|gql.example|/graphql|") for key in index["operation_keys"])
+        assert all(key.startswith("graphql|https://gql.example|/graphql|") for key in index["operation_keys"])
 
         records = read(run / "steps" / "01-step_a" / "operations" / "graphql" / "operations.json")["operations"]
         by_variant_name = {
@@ -984,7 +984,7 @@ def test_repeated_graphql_batch_name_keeps_entry_evidence() -> None:
     )
     try:
         index = operations.derive_operations(run)
-        key = "graphql|gql.example|/graphql|json-batch|RepeatedThing"
+        key = "graphql|https://gql.example|/graphql|json-batch|RepeatedThing"
         assert index["total_observed_calls"] == 1
         assert index["logical_operation_observations"] == 2
         assert index["operation_counts"][key] == 2
@@ -1307,9 +1307,9 @@ def test_opaque_path_material_is_templated() -> None:
     )
     try:
         index = operations.derive_operations(run)
-        assert "http|GET|api.example|/challenge/{id}" in index["operation_keys"]
-        assert "http|GET|api.example|/session/{id}" in index["operation_keys"]
-        assert index["operation_counts"]["http|GET|api.example|/challenge/{id}"] == 3
+        assert "http|GET|https://api.example|/challenge/{id}" in index["operation_keys"]
+        assert "http|GET|https://api.example|/session/{id}" in index["operation_keys"]
+        assert index["operation_counts"]["http|GET|https://api.example|/challenge/{id}"] == 3
         derived = b"\n".join(snapshot(run).values())
         for value in opaque:
             assert value.encode() not in derived
@@ -1342,10 +1342,10 @@ def test_stable_alphabetic_paths_are_not_templated() -> None:
     try:
         index = operations.derive_operations(run)
         assert index["operation_keys"] == [
-            "http|GET|api.example|/GetCurrentUserProfile",
-            "http|GET|api.example|/acknowledgements",
+            "http|GET|https://api.example|/GetCurrentUserProfile",
+            "http|GET|https://api.example|/acknowledgements",
         ]
-        assert "http|GET|api.example|/{id}" not in index["operation_keys"]
+        assert "http|GET|https://api.example|/{id}" not in index["operation_keys"]
     finally:
         shutil.rmtree(run, ignore_errors=True)
 
@@ -1435,7 +1435,7 @@ def equivalent_run(
 def semantic_reading(run: Path) -> dict:
     step = run / "steps" / "01-step_a" / "operations"
     endpoints = read(step / "endpoints.json")["operations"]
-    openapi = read(step / "openapi" / operations._host_filename("api.example"))
+    openapi = read(step / "openapi" / operations._host_filename("https://api.example"))
     gql_model = read(step / "graphql" / "observed-schema.json")["operations"]
     auth = read(step / "auth.json")["dependencies"]
     return {
@@ -1475,8 +1475,8 @@ def test_equivalent_runs_keep_semantic_identity() -> None:
         index_a = operations.derive_operations(run_a)
         index_b = operations.derive_operations(run_b)
         expected_keys = [
-            "graphql|api.example|/graphql|json|GetThing",
-            "http|GET|api.example|/users/{id}",
+            "graphql|https://api.example|/graphql|json|GetThing",
+            "http|GET|https://api.example|/users/{id}",
             "http|POST|api.example|/widgets",
         ]
         assert index_a["operation_keys"] == index_b["operation_keys"] == expected_keys
