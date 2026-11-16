@@ -37,7 +37,15 @@ def step_exercise(ctx):
           async function record(name, run) {
             try {
               const response = await run();
-              calls.push({name, ok: response.ok, status: response.status, url: response.url, type: response.type});
+              const body = await response.arrayBuffer();
+              calls.push({
+                name,
+                ok: response.ok,
+                status: response.status,
+                url: response.url,
+                type: response.type,
+                body_bytes: body.byteLength,
+              });
             } catch (error) {
               calls.push({name, ok: false, error: String(error)});
             }

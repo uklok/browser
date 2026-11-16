@@ -187,12 +187,32 @@ def copy_step_checkpoints(source: Path, target: Path) -> None:
 def materialize_target_view(source: Path, expected: dict[str, Any], destination: Path) -> dict[str, Any]:
     events = load_jsonl(source / "traffic" / "events.jsonl")
     boundaries = load_jsonl(source / "traffic" / "checkpoints.jsonl")
-    target_id = target_id_from_checkpoints(boundaries, list(expected["target_steps"]))
+    target_steps = list(expected["target_steps"])
+    target_id = target_id_from_checkpoints(boundaries, target_steps)
 
     target_events = [event for event in events if event_target_id(event) == target_id]
     target_boundaries = [item for item in boundaries if str(item.get("target_id") or "") == target_id]
     if not target_events:
         raise VerificationError(f"no traffic events were captured for target {target_id}")
+
+    boundaries_by_step = {
+        str(item.get("step")): item
+        for item in target_boundaries
+        if item.get("step") in target_steps
+    }
+    for step in target_steps:
+        boundary = boundaries_by_step.get(step)
+        if boundary is None:
+            raise VerificationError(f"missing target traffic boundary for step {step!r}")
+        if boundary.get("step_status") != "passed":
+            raise VerificationError(
+                f"target traffic boundary {step!r} did not pass: {boundary.get('step_status')!r}"
+            )
+        outcome = (boundary.get("settle") or {}).get("outcome")
+        if outcome != "quiet":
+            raise VerificationError(
+                f"target traffic boundary {step!r} did not settle cleanly: {outcome!r}"
+            )
 
     copy_step_checkpoints(source, destination)
     write_jsonl(destination / "traffic" / "events.jsonl", target_events)
@@ -204,6 +224,10 @@ def materialize_target_view(source: Path, expected: dict[str, Any], destination:
         "target_event_count": len(target_events),
         "raw_boundary_count": len(boundaries),
         "target_boundary_count": len(target_boundaries),
+        "settle_outcomes": {
+            step: (boundaries_by_step[step].get("settle") or {}).get("outcome")
+            for step in target_steps
+        },
     }
 
 

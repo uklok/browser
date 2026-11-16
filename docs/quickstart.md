@@ -73,7 +73,7 @@ python3 tests/reading-honeypot-live.py \
   .runs/reading_honeypot/<run-id>
 ```
 
-The verifier is the check surface: it reads the honeypot checkpoint target ID, builds a temporary target-only view of the shared-browser capture, derives operations there, and asserts the reviewed expectations in `automations/reading_honeypot/expectations.json`. It never rewrites the raw capture. A normal run must prove the redirect, stable/opaque paths, GraphQL variants and batch result provenance, canonical host observations, bucket grouping, reconciliation, and absence of fixture secrets.
+The verifier is the check surface: it reads the honeypot checkpoint target ID, requires every honeypot traffic boundary to settle `quiet`, builds a temporary target-only view of the shared-browser capture, derives operations there, and asserts the reviewed expectations in `automations/reading_honeypot/expectations.json`. It never rewrites the raw capture. The automation consumes every scripted response body before completing the checkpoint so Chrome must produce terminal network evidence and the recorder can acquire response bodies. A normal run must prove the redirect, stable/opaque paths, GraphQL variants and batch result provenance, canonical host observations, bucket grouping, reconciliation, and absence of fixture secrets.
 
 The two deliberate fail-closed pressures are separate runs so one protection cannot mask a regression in the other:
 
