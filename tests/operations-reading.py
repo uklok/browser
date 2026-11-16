@@ -475,7 +475,7 @@ try:
     assert user_a["first_step"] == "step_a"
     assert user_a["provenance"][0]["opening_seq"] == 1
     assert user_a["response"]["body_evidence"][0]["status"] == "captured"
-    openapi_a = read(step_a / "openapi" / operations._host_filename("api.example.test"))
+    openapi_a = read(step_a / "openapi" / operations._host_filename("https://api.example.test"))
     user_schema = openapi_a["paths"]["/users/{id}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
     assert "token" in user_schema["properties"]
     assert "required" not in user_schema
@@ -505,7 +505,7 @@ try:
     assert operations._gql(anon_a)[0].startswith("anonymous-")
 
     # 5. Schemas come only from observed bodies; missing body evidence stays unobserved.
-    openapi_c = read(run / "steps" / "03-step_c" / "operations" / "openapi" / operations._host_filename("api.example.test"))
+    openapi_c = read(run / "steps" / "03-step_c" / "operations" / "openapi" / operations._host_filename("https://api.example.test"))
     nobody = openapi_c["paths"]["/nobody"]["get"]["responses"]["200"]
     assert nobody["x-uklok-body-evidence"] == [{"status": "unobserved"}]
     assert "content" not in nobody
