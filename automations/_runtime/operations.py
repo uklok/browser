@@ -843,17 +843,24 @@ def _credential_rules(calls: list[dict[str, Any]], deps: dict[str, list[dict[str
             operations.setdefault(identity["key"], set()).add(call["key"])
 
     occurrences: dict[tuple[str, str], set[str]] = {}
-    placeholders: dict[tuple[str, str], set[str]] = {}
+    placeholders_by_call: dict[tuple[str, str], dict[str, set[str]]] = {}
     for call in calls:
         for dependency in deps.get(call["key"], []):
             key = (dependency["kind"], dependency["name"])
             occurrences.setdefault(key, set()).add(call["key"])
-            placeholders.setdefault(key, set()).add(dependency["placeholder"])
+            placeholders_by_call.setdefault(key, {}).setdefault(call["key"], set()).add(dependency["placeholder"])
 
     rules: list[dict[str, Any]] = []
     for dep_key in sorted(occurrences):
         kind, name = dep_key
         remaining = set(occurrences[dep_key])
+
+        def scoped_placeholders(covered: set[str]) -> list[str]:
+            return sorted({
+                placeholder
+                for request_key in covered
+                for placeholder in placeholders_by_call[dep_key].get(request_key, set())
+            })
 
         def add_rule(scope: str, context: str, covered: set[str]) -> None:
             rules.append(
@@ -862,7 +869,7 @@ def _credential_rules(calls: list[dict[str, Any]], deps: dict[str, list[dict[str
                     "context": context,
                     "kind": kind,
                     "name": name,
-                    "placeholders": sorted(placeholders[dep_key]),
+                    "placeholders": scoped_placeholders(covered),
                     "observed_calls": len(covered),
                     "observed_on_all_context_calls": True,
                 }
@@ -895,7 +902,7 @@ def _credential_rules(calls: list[dict[str, Any]], deps: dict[str, list[dict[str
                     "context": "observed-calls",
                     "kind": kind,
                     "name": name,
-                    "placeholders": sorted(placeholders[dep_key]),
+                    "placeholders": scoped_placeholders(remaining),
                     "request_keys": sorted(remaining),
                     "observed_on_all_context_calls": False,
                 }
