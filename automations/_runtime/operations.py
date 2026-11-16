@@ -85,7 +85,8 @@ def _new_call(key: str, session: Any, request: Any) -> dict[str, Any]:
         "request_extra_info_hop": 0,
         "pending_request_extra_headers": {},
         "response_headers": {},
-        "pending_response_extra": [],
+        "response_extra_info_hop": 0,
+        "pending_response_extra_headers": {},
         "post_data": None,
         "status": None,
         "mime": None,
@@ -143,7 +144,7 @@ def _assemble(run: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
                     call["post_data"] = request.get("postData") if isinstance(request.get("postData"), str) else None
                     if redirect:
                         call["response_headers"] = {}
-                        call["pending_response_extra"] = []
+                        call["pending_response_extra_headers"] = {}
                         call["status"] = None
                         call["mime"] = None
                         call["body"] = None
@@ -163,31 +164,45 @@ def _assemble(run: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
                     call["status"] = response.get("status")
                     call["mime"] = str(response.get("mimeType") or call["mime"] or "")
                     call["response_headers"] = _merge_headers(call["response_headers"], _headers(response.get("headers")))
-                    pending = call["pending_response_extra"]
-                    for extra in pending:
+                    extra = call["pending_response_extra_headers"].pop(
+                        call["request_hop"],
+                        None,
+                    )
+                    if (
+                        extra
+                        and call["status"] is not None
+                        and extra.get("status") is not None
+                        and str(extra["status"]) == str(call["status"])
+                    ):
+                        call["response_headers"] = _merge_headers(
+                            call["response_headers"],
+                            extra["headers"],
+                        )
+                elif method == "Network.responseReceivedExtraInfo":
+                    call["response_extra_info_hop"] += 1
+                    hop = call["response_extra_info_hop"]
+                    extra_status = params.get("statusCode")
+                    extra_headers = _headers(params.get("headers"))
+                    if hop == call["request_hop"]:
                         if (
                             call["status"] is not None
-                            and extra.get("status") is not None
-                            and str(extra["status"]) == str(call["status"])
+                            and extra_status is not None
+                            and str(extra_status) == str(call["status"])
                         ):
                             call["response_headers"] = _merge_headers(
                                 call["response_headers"],
-                                extra["headers"],
+                                extra_headers,
                             )
-                    call["pending_response_extra"] = []
-                elif method == "Network.responseReceivedExtraInfo":
-                    extra_status = params.get("statusCode")
-                    extra_headers = _headers(params.get("headers"))
-                    if (
-                        call["status"] is not None
-                        and extra_status is not None
-                        and str(extra_status) == str(call["status"])
-                    ):
-                        call["response_headers"] = _merge_headers(call["response_headers"], extra_headers)
-                    elif call["status"] is None:
-                        call["pending_response_extra"].append(
-                            {"status": extra_status, "headers": extra_headers}
-                        )
+                        elif call["status"] is None:
+                            call["pending_response_extra_headers"][hop] = {
+                                "status": extra_status,
+                                "headers": extra_headers,
+                            }
+                    elif hop > call["request_hop"]:
+                        call["pending_response_extra_headers"][hop] = {
+                            "status": extra_status,
+                            "headers": extra_headers,
+                        }
                 elif method == "Network.loadingFailed" and call["body"] is None:
                     call["body"] = {"status": "unavailable", "reason": "loading_failed"}
 
