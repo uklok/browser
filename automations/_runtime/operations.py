@@ -262,10 +262,13 @@ def _assemble(run: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
 
     boundaries = []
     for raw in _jsonl(run / "traffic" / "checkpoints.jsonl"):
+        # Only real, non-empty step identities may own opening traffic.
+        if not isinstance(raw.get("step"), str) or not raw["step"].strip():
+            continue
         try:
             boundaries.append(
                 {
-                    "step": str(raw.get("step")),
+                    "step": raw["step"],
                     "from_seq": int(raw.get("from_seq")),
                     "through_seq": int(raw.get("through_seq")),
                     "target_id": str(raw.get("target_id")) if raw.get("target_id") else None,
@@ -540,19 +543,27 @@ def _canonical_host(url: Any) -> str:
     return f"{rendered}:{port}" if port is not None else rendered
 
 
+def _canonical_origin(url: Any) -> str:
+    """One scheme-aware owner for operation, credential and document identity."""
+    scheme = (url.scheme or "https").lower()
+    return f"{scheme}://{_canonical_host(url)}"
+
+
 def _identities(call: dict[str, Any]) -> list[dict[str, Any]]:
     url = urlsplit(str(call.get("url") or ""))
     path, path_params = _template(url.path or "/")
     method = str(call.get("method") or "UNKNOWN").upper()
     scheme = (url.scheme or "https").lower()
     host = _canonical_host(url)
+    origin = _canonical_origin(url)
     gql_entries = _gql_entries(call)
     if gql_entries:
         return [
             {
-                "key": f"graphql|{host}|{path}|{entry['variant']}|{entry['identity_name']}",
+                "key": f"graphql|{origin}|{path}|{entry['variant']}|{entry['identity_name']}",
                 "kind": "graphql",
                 "host": host,
+                "origin": origin,
                 "scheme": scheme,
                 "path": path,
                 "path_params": path_params,
@@ -565,9 +576,10 @@ def _identities(call: dict[str, Any]) -> list[dict[str, Any]]:
         ]
     return [
         {
-            "key": f"http|{method}|{host}|{path}",
+            "key": f"http|{method}|{origin}|{path}",
             "kind": "http",
             "host": host,
+            "origin": origin,
             "scheme": scheme,
             "path": path,
             "path_params": path_params,
@@ -824,7 +836,7 @@ def _credential_rules(calls: list[dict[str, Any]], deps: dict[str, list[dict[str
     for call in calls:
         identities = _identities(call)
         operation_memberships[call["key"]] = {identity["key"] for identity in identities}
-        domains.setdefault(identities[0]["host"], set()).add(call["key"])
+        domains.setdefault(identities[0]["origin"], set()).add(call["key"])
         if call.get("owner"):
             goals.setdefault(str(call["owner"]), set()).add(call["key"])
         for identity in identities:
@@ -856,7 +868,7 @@ def _credential_rules(calls: list[dict[str, Any]], deps: dict[str, list[dict[str
                 }
             )
 
-        if all_calls and all_calls <= remaining:
+        if len(domains) == 1 and all_calls and all_calls <= remaining:
             add_rule("global", "*", all_calls)
             remaining -= all_calls
         else:
@@ -1004,17 +1016,15 @@ def _graphql(calls: list[dict[str, Any]], secrets: Secrets, generation: str) -> 
     }
 
 
-def _openapi(host: str, calls: list[dict[str, Any]], deps: dict[str, list[dict[str, str]]], generation: str) -> dict[str, Any]:
+def _openapi(origin: str, calls: list[dict[str, Any]], deps: dict[str, list[dict[str, str]]], generation: str) -> dict[str, Any]:
     buckets: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    scheme = "https"
     for call in calls:
         for ident in _identities(call):
-            if ident["host"] == host and ident["kind"] == "http":
-                scheme = ident["scheme"]
+            if ident["origin"] == origin and ident["kind"] == "http":
                 buckets.setdefault((ident["path"], ident["method"].lower()), []).append(call)
     paths = {}
     for (path, method), items in sorted(buckets.items()):
-        ident = next(identity for identity in _identities(items[0]) if identity["kind"] == "http" and identity["host"] == host and identity["path"] == path and identity["method"].lower() == method)
+        ident = next(identity for identity in _identities(items[0]) if identity["kind"] == "http" and identity["origin"] == origin and identity["path"] == path and identity["method"].lower() == method)
         params = [{"name": n, "in": "path", "required": True, "schema": {"type": "string"}} for n in ident["path_params"]]
         query_names = sorted({n for c in items for n, _ in parse_qsl(urlsplit(str(c.get("url") or "")).query, keep_blank_values=True)})
         params.extend(
@@ -1056,8 +1066,8 @@ def _openapi(host: str, calls: list[dict[str, Any]], deps: dict[str, list[dict[s
         paths.setdefault(path, {})[method] = op
     return {
         "openapi": "3.1.0",
-        "info": {"title": f"Observed API surface for {host}", "version": "observed", "description": "Observed browser traffic only; not a completeness claim."},
-        "servers": [{"url": f"{scheme}://{host}"}],
+        "info": {"title": f"Observed API surface for {origin}", "version": "observed", "description": "Observed browser traffic only; not a completeness claim."},
+        "servers": [{"url": origin}],
         "paths": paths,
         "x-uklok-observed-only": True,
         "x-uklok-generation": generation,
@@ -1449,14 +1459,14 @@ def derive_operations(run: Path, step: str | None = None) -> dict[str, Any]:
                 "operations": gql,
             })
             _write(stage, str(base / "graphql" / "observed-schema.json"), model)
-            hosts = {
-                identity["host"]
+            origins = {
+                identity["origin"]
                 for call in step_calls
                 for identity in _identities(call)
                 if identity["kind"] == "http"
             }
-            for host in sorted(hosts):
-                _write(stage, str(base / "openapi" / _host_filename(host)), _openapi(host, step_calls, deps, generation))
+            for origin in sorted(origins):
+                _write(stage, str(base / "openapi" / _host_filename(origin)), _openapi(origin, step_calls, deps, generation))
 
         if not index["integrity"]["reconciles"]:
             raise OperationReadError("operation counts did not reconcile")
