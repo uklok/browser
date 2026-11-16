@@ -67,7 +67,7 @@ docker compose \
   up -d --no-deps --build reading-honeypot
 
 BU_CDP_URL=http://127.0.0.1:${CDP_HOST_PORT:-9222} \
-  ./bin/browser-automation run reading_honeypot --capture-traffic --allow-draft
+  ./bin/browser-automation run reading_honeypot --capture-traffic
 
 python3 tests/reading-honeypot-live.py \
   .runs/reading_honeypot/<run-id>
@@ -81,7 +81,6 @@ The two deliberate fail-closed pressures are separate runs so one protection can
 BU_CDP_URL=http://127.0.0.1:${CDP_HOST_PORT:-9222} \
   ./bin/browser-automation run reading_honeypot \
     --capture-traffic \
-    --allow-draft \
     --input trap=graphql_comment
 
 python3 tests/reading-honeypot-live.py \
@@ -90,7 +89,6 @@ python3 tests/reading-honeypot-live.py \
 BU_CDP_URL=http://127.0.0.1:${CDP_HOST_PORT:-9222} \
   ./bin/browser-automation run reading_honeypot \
     --capture-traffic \
-    --allow-draft \
     --input trap=field_name
 
 python3 tests/reading-honeypot-live.py \

@@ -1,7 +1,7 @@
 schema = "uklok.browser.automation/v1"
 id = "reading_honeypot"
 version = 1
-status = "draft"
+status = "ready"
 intent = "Drive the shared Chrome session through a local reading honeypot so operation readings can be verified from real CDP capture."
 module = "run.py"
 
