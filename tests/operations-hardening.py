@@ -1026,19 +1026,19 @@ def test_host_identity_and_openapi_names() -> None:
     try:
         index = operations.derive_operations(run)
         keys = index["operation_keys"]
-        assert "http|GET|api.example|/case" in keys
-        assert "http|GET|port.example|/default" in keys
+        assert "http|GET|https://api.example|/case" in keys
+        assert "http|GET|http://port.example|/default" in keys
         assert all("API.Example" not in key and ":443" not in key and ":80" not in key for key in keys)
-        assert index["operation_counts"]["http|GET|api.example|/case"] == 2
-        assert index["operation_counts"]["http|GET|port.example|/default"] == 2
+        assert index["operation_counts"]["http|GET|https://api.example|/case"] == 2
+        assert index["operation_counts"]["http|GET|http://port.example|/default"] == 2
 
         openapi_dir = run / "steps" / "01-step_a" / "operations" / "openapi"
         files = sorted(openapi_dir.glob("*.json"))
         assert len(files) == 4
         assert len({path.name.lower() for path in files}) == 4
         weird_names = {
-            operations._host_filename("weird.example:8443"),
-            operations._host_filename("weird.example_8443"),
+            operations._host_filename("https://weird.example:8443"),
+            operations._host_filename("https://weird.example_8443"),
         }
         assert len(weird_names) == 2
         assert all((openapi_dir / name).is_file() for name in weird_names)
@@ -1558,6 +1558,94 @@ def test_scale_reconciliation() -> None:
         shutil.rmtree(run, ignore_errors=True)
 
 
+
+def test_origin_identity_scopes_operations_openapi_and_credentials() -> None:
+    urls = [
+        "http://API.Example/items",
+        "http://api.example:80/items",
+        "https://API.Example/items",
+        "https://api.example:443/items",
+    ]
+    events = [
+        raw(seq, "Network.requestWillBeSent", f"origin-{seq}", {
+            "type": "XHR",
+            "request": {
+                "method": "GET", "url": url,
+                "headers": {"Authorization": "Bearer http-secret" if url.startswith("http://") else "Bearer https-secret"},
+            },
+        })
+        for seq, url in enumerate(urls, 1)
+    ]
+    run = make_run(
+        ["step_a"], events,
+        [{"step": "step_a", "from_seq": 1, "through_seq": 4, "target_id": "page-1"}],
+    )
+    try:
+        index = operations.derive_operations(run)
+        assert index["operation_counts"] == {
+            "http|GET|http://api.example|/items": 2,
+            "http|GET|https://api.example|/items": 2,
+        }
+        assert index["attributed_count"] == 4
+        scoped = [r for r in index["credential_rules"] if r["name"] == "Authorization"]
+        assert {r["context"] for r in scoped} == {"http://api.example", "https://api.example"}
+        assert all(r["scope"] == "domain" and r["observed_calls"] == 2 for r in scoped)
+        assert len({tuple(r["placeholders"]) for r in scoped}) == 2
+
+        directory = run / "steps" / "01-step_a" / "operations" / "openapi"
+        files = sorted(directory.glob("*.json"))
+        assert len(files) == 2
+        assert len({p.name.lower() for p in files}) == 2
+        for origin in ("http://api.example", "https://api.example"):
+            document = read(directory / operations._host_filename(origin))
+            assert document["servers"] == [{"url": origin}]
+            assert document["paths"]["/items"]["get"]["x-uklok-observed-count"] == 2
+        operations.verify_reading(run)
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
+def test_ownerless_checkpoint_boundaries_fail_closed() -> None:
+    for missing in ({}, {"step": None}, {"step": ""}, {"step": "   "}):
+        run = make_run(
+            ["step_a"],
+            [raw(2, "Network.requestWillBeSent", "ownerless", {
+                "type": "XHR", "request": {
+                    "method": "GET", "url": "https://api.example/items", "headers": {},
+                },
+            })],
+            [{**missing, "from_seq": 1, "through_seq": 3, "target_id": "page-1"}],
+        )
+        try:
+            index = operations.derive_operations(run)
+            assert index["attributed_count"] == 0
+            assert index["unattributed_count"] == 1
+            assert index["unattributed"][0]["attribution"] == "unattributed"
+            assert index["unattributed"][0]["owner_candidates"] == []
+            assert "None" not in index["steps"]
+        finally:
+            shutil.rmtree(run, ignore_errors=True)
+
+    run = make_run(
+        ["step_a"],
+        [raw(2, "Network.requestWillBeSent", "legacy", {
+            "type": "XHR", "request": {
+                "method": "GET", "url": "https://api.example/items", "headers": {},
+            },
+        })],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 3, "target_id": "page-1"}],
+    )
+    try:
+        index = operations.derive_operations(run)
+        assert index["attributed_count"] == 1
+        assert index["unattributed_count"] == 0
+        assert "step_a" in index["steps"]
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
+test_origin_identity_scopes_operations_openapi_and_credentials()
+test_ownerless_checkpoint_boundaries_fail_closed()
 test_redirect_replaces_request_facts()
 test_late_redirect_response_extra_info_does_not_contaminate_final_hop()
 test_final_response_extra_info_survives_missing_redirect_extra()
