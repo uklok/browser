@@ -23,7 +23,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, body, "text/html; charset=utf-8")
             return
         if path == "/redirect/final":
-            self._send(200, _json({"ok": True, "hop": "final"}), "application/json", {"Set-Cookie": "finalcookie=kept; Path=/"})
+            self._send(
+                200,
+                _json({"ok": True, "hop": "final"}),
+                "application/json",
+                {"Set-Cookie": "finalcookie=kept; Path=/"},
+            )
             return
         if path in {"/acknowledgements", "/GetCurrentUserProfile", "/case", "/default"} or path.startswith("/challenge/") or path.startswith("/bucket/"):
             self._send(200, _json({"path": path}), "application/json")
@@ -35,9 +40,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
-        length = int(self.headers.get("Content-Length") or "0")
-        if length:
-            self.rfile.read(length)
+        body = self._read_body()
         if path == "/redirect/start":
             self._send(
                 302,
@@ -50,12 +53,40 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path == "/items":
-            self._send(200, _json({"Authorization": "published-field-value", "ok": True}), "application/json")
+            self._send(
+                200,
+                _json({"Authorization": "published-field-value", "ok": True}),
+                "application/json",
+            )
             return
         if path == "/graphql":
+            content_type = str(self.headers.get("Content-Type") or "").lower()
+            payload = None
+            if "application/json" in content_type and body:
+                try:
+                    payload = json.loads(body)
+                except json.JSONDecodeError:
+                    self._send(400, _json({"error": "invalid json"}), "application/json")
+                    return
+            if isinstance(payload, list):
+                response = []
+                for entry in payload:
+                    query = str(entry.get("query") or "") if isinstance(entry, dict) else ""
+                    if "query A" in query:
+                        response.append({"data": {"a": "live-a"}})
+                    elif "query B" in query:
+                        response.append({"errors": [{"message": "live-b-failed"}]})
+                    else:
+                        response.append({"data": {"thing": {"id": "live"}}})
+                self._send(200, json.dumps(response).encode(), "application/json")
+                return
             self._send(200, _json({"data": {"thing": {"id": "live"}}}), "application/json")
             return
         self._send(404, _json({"error": "not found"}), "application/json")
+
+    def _read_body(self) -> bytes:
+        length = int(self.headers.get("Content-Length") or "0")
+        return self.rfile.read(length) if length else b""
 
     def _send(self, status: int, body: bytes, content_type: str, extra: dict[str, str] | None = None) -> None:
         self.send_response(status)
@@ -74,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
         print("%s %s" % (self.address_string(), fmt % args), flush=True)
 
 
-def _json(value: dict) -> bytes:
+def _json(value) -> bytes:
     return json.dumps(value).encode()
 
 

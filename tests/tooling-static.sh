@@ -27,7 +27,12 @@ import pathlib
 import tomllib
 
 root = pathlib.Path.cwd()
-for path in sorted((root / 'automations').rglob('*.py')):
+python_targets = list((root / 'automations').rglob('*.py'))
+python_targets.extend((root / 'honeypot').rglob('*.py'))
+live_verifier = root / 'tests' / 'reading-honeypot-live.py'
+if live_verifier.is_file():
+    python_targets.append(live_verifier)
+for path in sorted(python_targets):
     ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
 for path in sorted((root / 'automations').rglob('contract.toml')):
     tomllib.loads(path.read_text(encoding='utf-8'))
@@ -42,6 +47,7 @@ python3 automations/_runtime/cli.py operations --help | grep -q -- '--step'
 python3 tests/traffic-boundaries.py
 python3 tests/operations-reading.py
 python3 tests/operations-hardening.py
+python3 tests/reading-honeypot-server.py
 
 python3 tests/run-layout.py
 

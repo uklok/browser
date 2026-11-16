@@ -2,7 +2,7 @@ schema = "uklok.browser.automation/v1"
 id = "reading_honeypot"
 version = 1
 status = "ready"
-intent = "Drive the shared Chrome session through the reading honeypot so operation readings can be measured from real CDP capture."
+intent = "Drive the shared Chrome session through a local reading honeypot so operation readings can be verified from real CDP capture."
 module = "run.py"
 
 [trigger]
@@ -10,37 +10,22 @@ description = "Manual live proof for derived operation reading. Requires the rea
 
 [authority]
 allowed = [
-  "Open the honeypot health page in a browser tab.",
-  "Issue the scripted honeypot requests from that page.",
+  "Open the fixed reading-honeypot health page in a browser tab.",
+  "Issue only the scripted reading-honeypot requests using synthetic fixture values.",
 ]
 forbidden = [
-  "Call any origin other than the reading honeypot.",
+  "Call any origin other than the reading-honeypot aliases.",
+  "Inject real credentials, cookies, tokens, or account state into this fixture.",
   "Change authenticated account state.",
 ]
 
 [[inputs]]
-name = "origin"
-type = "url"
-required = false
-sensitive = false
-default = "http://a.reading.test"
-description = "Honeypot origin opened in Chrome."
-
-[[inputs]]
-name = "secret"
-type = "string"
-required = false
-sensitive = true
-default = "live-hop-secret-1842"
-description = "Credential the page sends on the redirect POST. It stays in the gitignored capture."
-
-[[inputs]]
-name = "include_comment"
+name = "fail_closed"
 type = "bool"
 required = false
 sensitive = false
 default = false
-description = "Also send a GraphQL comment that repeats the secret, so reading must fail closed."
+description = "Also send deliberate secret-publication traps; the operation reading must then fail closed."
 
 [[preconditions]]
 id = "browser_ready"
@@ -49,7 +34,7 @@ condition = "UKLOK Browser is healthy, CDP is reachable, and reading-honeypot is
 [[algorithm]]
 id = "open_honeypot"
 pseudocode = """
-OPEN input.origin /health in a new tab.
+OPEN the fixed reading-honeypot /health page in a new tab.
 WAIT until the page loads.
 READ document.title.
 """
@@ -61,17 +46,17 @@ known_variants = []
 [[algorithm]]
 id = "exercise"
 pseudocode = """
-FROM the honeypot page, FETCH the redirect, path, host, GraphQL, and bucket scenarios.
-IF input.include_comment, also POST a GraphQL comment containing input.secret.
+FROM the honeypot page, FETCH the redirect, stable-path, opaque-path, host, GraphQL, and bucket scenarios.
+IF input.fail_closed, also POST the deliberate GraphQL-comment and JSON-field-name secret traps.
 RETURN the per-request status list.
 """
-checkpoint = "The page script finished the scenario list, including the redirect request."
+checkpoint = "Every scripted honeypot request completed with a successful HTTP response."
 on_failure = "Stop and inspect the browser console and honeypot logs."
 resume = "safe"
 known_variants = []
 
 [success]
-condition = "Chrome opened the honeypot and issued the scenario requests."
+condition = "Chrome opened the honeypot and every scripted scenario request completed."
 
 [failure]
 capture_screenshot = true

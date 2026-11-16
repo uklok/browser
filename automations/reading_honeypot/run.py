@@ -1,8 +1,14 @@
 import json
 
 
+HONEYPOT_ORIGIN = "http://a.reading.test"
+TEST_SECRET = "reading-honeypot-secret-1842"
+FIELD_SECRET = "NonsensitiveOpaqueValue"
+OPAQUE_TOKEN = "jStkcFiTKsVzcqdhcpWMPdYC"
+
+
 def step_open_honeypot(ctx):
-    target = ctx["inputs"]["origin"].rstrip("/") + "/health"
+    target = HONEYPOT_ORIGIN + "/health"
     new_tab(target)
     wait_for_load()
     title = str(js("document.title") or "").strip()
@@ -13,19 +19,19 @@ def step_open_honeypot(ctx):
 
 
 def step_exercise(ctx):
-    secret = ctx["inputs"]["secret"]
-    include_comment = bool(ctx["inputs"]["include_comment"])
+    fail_closed = bool(ctx["inputs"]["fail_closed"])
     observed = js(
         """
         (async () => {
           const secret = %s;
-          const includeComment = %s;
-          const opaque = "jStkcFiTKsVzcqdhcpWMPdYC";
+          const fieldSecret = %s;
+          const opaque = %s;
+          const failClosed = %s;
           const calls = [];
           async function record(name, run) {
             try {
               const response = await run();
-              calls.push({name, ok: true, status: response.status, url: response.url, type: response.type});
+              calls.push({name, ok: response.ok, status: response.status, url: response.url, type: response.type});
             } catch (error) {
               calls.push({name, ok: false, error: String(error)});
             }
@@ -77,7 +83,7 @@ def step_exercise(ctx):
           for (let n = 1000; n < 1020; n += 1) {
             await record("bucket-" + n, () => fetch("http://api.reading.test/bucket/" + n));
           }
-          if (includeComment) {
+          if (failClosed) {
             await record("graphql-comment", () => fetch("http://api.reading.test/graphql", {
               method: "POST",
               headers: {"Authorization": "Bearer " + secret, "Content-Type": "application/json"},
@@ -85,22 +91,29 @@ def step_exercise(ctx):
             }));
             await record("field-name", () => fetch("http://api.reading.test/items", {
               method: "POST",
-              headers: {"Authorization": "Bearer NonsensitiveOpaqueValue", "Content-Type": "application/json"},
-              body: JSON.stringify({NonsensitiveOpaqueValue: "ordinary-value"}),
+              headers: {"Authorization": "Bearer " + fieldSecret, "Content-Type": "application/json"},
+              body: JSON.stringify({[fieldSecret]: "ordinary-value"}),
             }));
           }
           return calls;
         })()
         """
         % (
-            json.dumps(secret),
-            "true" if include_comment else "false",
+            json.dumps(TEST_SECRET),
+            json.dumps(FIELD_SECRET),
+            json.dumps(OPAQUE_TOKEN),
+            "true" if fail_closed else "false",
             "a" * 64,
             "b" * 64,
         )
     )
-    names = [item.get("name") for item in observed] if isinstance(observed, list) else []
+    expected_count = 37 if fail_closed else 35
+    ok = (
+        isinstance(observed, list)
+        and len(observed) == expected_count
+        and all(bool(item.get("ok")) for item in observed if isinstance(item, dict))
+    )
     return {
-        "ok": "redirect" in names and "acknowledgements" in names and "graphql-json" in names,
+        "ok": ok,
         "observed": observed,
     }
