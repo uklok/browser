@@ -85,8 +85,8 @@ def _new_call(key: str, session: Any, request: Any) -> dict[str, Any]:
         "request_extra_info_hop": 0,
         "pending_request_extra_headers": {},
         "response_headers": {},
-        "response_extra_info_hop": 0,
-        "pending_response_extra_headers": {},
+        "redirect_response_extra": [],
+        "pending_response_extra": [],
         "post_data": None,
         "status": None,
         "mime": None,
@@ -143,8 +143,21 @@ def _assemble(run: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
                     call["request_headers"] = _merge_headers(_headers(request.get("headers")), pending)
                     call["post_data"] = request.get("postData") if isinstance(request.get("postData"), str) else None
                     if redirect:
+                        redirect_response = params.get("redirectResponse") or {}
+                        redirect_status = (
+                            redirect_response.get("status")
+                            if isinstance(redirect_response, dict)
+                            else None
+                        )
+                        if redirect_status is not None:
+                            call["redirect_response_extra"].append(
+                                {
+                                    "status": redirect_status,
+                                    "expected": params.get("redirectHasExtraInfo"),
+                                }
+                            )
                         call["response_headers"] = {}
-                        call["pending_response_extra_headers"] = {}
+                        call["pending_response_extra"] = []
                         call["status"] = None
                         call["mime"] = None
                         call["body"] = None
@@ -164,45 +177,71 @@ def _assemble(run: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
                     call["status"] = response.get("status")
                     call["mime"] = str(response.get("mimeType") or call["mime"] or "")
                     call["response_headers"] = _merge_headers(call["response_headers"], _headers(response.get("headers")))
-                    extra = call["pending_response_extra_headers"].pop(
-                        call["request_hop"],
-                        None,
-                    )
-                    if (
-                        extra
-                        and call["status"] is not None
-                        and extra.get("status") is not None
-                        and str(extra["status"]) == str(call["status"])
-                    ):
-                        call["response_headers"] = _merge_headers(
-                            call["response_headers"],
-                            extra["headers"],
-                        )
-                elif method == "Network.responseReceivedExtraInfo":
-                    call["response_extra_info_hop"] += 1
-                    hop = call["response_extra_info_hop"]
-                    extra_status = params.get("statusCode")
-                    extra_headers = _headers(params.get("headers"))
-                    if hop == call["request_hop"]:
+                    pending = call["pending_response_extra"]
+                    for extra in pending:
                         if (
                             call["status"] is not None
-                            and extra_status is not None
-                            and str(extra_status) == str(call["status"])
+                            and extra.get("status") is not None
+                            and str(extra["status"]) == str(call["status"])
                         ):
                             call["response_headers"] = _merge_headers(
                                 call["response_headers"],
-                                extra_headers,
+                                extra["headers"],
                             )
-                        elif call["status"] is None:
-                            call["pending_response_extra_headers"][hop] = {
-                                "status": extra_status,
-                                "headers": extra_headers,
-                            }
-                    elif hop > call["request_hop"]:
-                        call["pending_response_extra_headers"][hop] = {
-                            "status": extra_status,
-                            "headers": extra_headers,
-                        }
+                    call["pending_response_extra"] = []
+                elif method == "Network.responseReceivedExtraInfo":
+                    extra_status = params.get("statusCode")
+                    extra_headers = _headers(params.get("headers"))
+
+                    # ExtraInfo is optional per response and may arrive before or
+                    # after responseReceived, so raw event ordinals cannot identify
+                    # redirect hops. Prefer the protocol's redirectHasExtraInfo
+                    # declaration when present, then fall back to redirect/current
+                    # response status so a missing earlier ExtraInfo cannot shift all
+                    # later metadata onto the wrong hop.
+                    explicit_redirect = next(
+                        (
+                            item
+                            for item in call["redirect_response_extra"]
+                            if item.get("expected") is True
+                            and extra_status is not None
+                            and str(item.get("status")) == str(extra_status)
+                        ),
+                        None,
+                    )
+                    if explicit_redirect is not None:
+                        call["redirect_response_extra"].remove(explicit_redirect)
+                        continue
+
+                    if (
+                        call["status"] is not None
+                        and extra_status is not None
+                        and str(extra_status) == str(call["status"])
+                    ):
+                        call["response_headers"] = _merge_headers(
+                            call["response_headers"],
+                            extra_headers,
+                        )
+                        continue
+
+                    fallback_redirect = next(
+                        (
+                            item
+                            for item in call["redirect_response_extra"]
+                            if item.get("expected") is None
+                            and extra_status is not None
+                            and str(item.get("status")) == str(extra_status)
+                        ),
+                        None,
+                    )
+                    if fallback_redirect is not None:
+                        call["redirect_response_extra"].remove(fallback_redirect)
+                        continue
+
+                    if call["status"] is None:
+                        call["pending_response_extra"].append(
+                            {"status": extra_status, "headers": extra_headers}
+                        )
                 elif method == "Network.loadingFailed" and call["body"] is None:
                     call["body"] = {"status": "unavailable", "reason": "loading_failed"}
 

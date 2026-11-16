@@ -206,6 +206,7 @@ def test_late_redirect_response_extra_info_does_not_contaminate_final_hop() -> N
                         "headers": {},
                     },
                     "redirectResponse": {"status": 302},
+                    "redirectHasExtraInfo": True,
                 },
             ),
             raw(
@@ -256,6 +257,151 @@ def test_late_redirect_response_extra_info_does_not_contaminate_final_hop() -> N
         )
         assert b"intermediate" not in derived_json
         assert b"amount" not in derived_json
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
+def test_final_response_extra_info_survives_missing_redirect_extra() -> None:
+    run = make_run(
+        ["step_a"],
+        [
+            raw(
+                1,
+                "Network.requestWillBeSent",
+                "redirect-missing-extra",
+                {
+                    "type": "Fetch",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://a.example/start",
+                        "headers": {"Content-Type": "application/json"},
+                        "postData": json.dumps({"amount": 5}),
+                    },
+                },
+            ),
+            raw(
+                2,
+                "Network.requestWillBeSent",
+                "redirect-missing-extra",
+                {
+                    "type": "Fetch",
+                    "request": {
+                        "method": "GET",
+                        "url": "https://b.example/final",
+                        "headers": {},
+                    },
+                    "redirectResponse": {"status": 302},
+                    "redirectHasExtraInfo": False,
+                },
+            ),
+            raw(
+                3,
+                "Network.responseReceived",
+                "redirect-missing-extra",
+                {
+                    "type": "Fetch",
+                    "hasExtraInfo": True,
+                    "response": {
+                        "url": "https://b.example/final",
+                        "status": 200,
+                        "mimeType": "application/json",
+                        "headers": {},
+                    },
+                },
+            ),
+            raw(
+                4,
+                "Network.responseReceivedExtraInfo",
+                "redirect-missing-extra",
+                {
+                    "statusCode": 200,
+                    "headers": {"Set-Cookie": "finalcookie=final-value; Path=/"},
+                },
+            ),
+        ],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 4, "target_id": "page-1"}],
+    )
+    try:
+        index = operations.derive_operations(run)
+        assert index["operation_keys"] == ["http|GET|b.example|/final"]
+        endpoints = read(
+            run / "steps" / "01-step_a" / "operations" / "endpoints.json"
+        )["operations"]
+        final = endpoints[0]
+        assert final["response"]["sets_cookies"] == ["finalcookie"]
+        derived_json = b"\n".join(
+            value
+            for key, value in snapshot(run).items()
+            if key != "traffic/secrets.env"
+        )
+        assert b"amount" not in derived_json
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
+def test_final_response_extra_info_survives_missing_redirect_extra_without_flag() -> None:
+    run = make_run(
+        ["step_a"],
+        [
+            raw(
+                1,
+                "Network.requestWillBeSent",
+                "redirect-missing-extra-fallback",
+                {
+                    "type": "Fetch",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://a.example/start",
+                        "headers": {},
+                    },
+                },
+            ),
+            raw(
+                2,
+                "Network.requestWillBeSent",
+                "redirect-missing-extra-fallback",
+                {
+                    "type": "Fetch",
+                    "request": {
+                        "method": "GET",
+                        "url": "https://b.example/final",
+                        "headers": {},
+                    },
+                    "redirectResponse": {"status": 302},
+                },
+            ),
+            raw(
+                3,
+                "Network.responseReceived",
+                "redirect-missing-extra-fallback",
+                {
+                    "type": "Fetch",
+                    "response": {
+                        "url": "https://b.example/final",
+                        "status": 200,
+                        "mimeType": "application/json",
+                        "headers": {},
+                    },
+                },
+            ),
+            raw(
+                4,
+                "Network.responseReceivedExtraInfo",
+                "redirect-missing-extra-fallback",
+                {
+                    "statusCode": 200,
+                    "headers": {"Set-Cookie": "finalcookie=final-value; Path=/"},
+                },
+            ),
+        ],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 4, "target_id": "page-1"}],
+    )
+    try:
+        operations.derive_operations(run)
+        endpoints = read(
+            run / "steps" / "01-step_a" / "operations" / "endpoints.json"
+        )["operations"]
+        assert endpoints[0]["response"]["sets_cookies"] == ["finalcookie"]
     finally:
         shutil.rmtree(run, ignore_errors=True)
 
@@ -1341,6 +1487,8 @@ def test_scale_reconciliation() -> None:
 
 test_redirect_replaces_request_facts()
 test_late_redirect_response_extra_info_does_not_contaminate_final_hop()
+test_final_response_extra_info_survives_missing_redirect_extra()
+test_final_response_extra_info_survives_missing_redirect_extra_without_flag()
 test_failed_stage_never_publishes()
 test_failed_publication_restores_previous_generation()
 test_ambiguous_checkpoint_is_unattributed()
