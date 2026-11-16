@@ -57,20 +57,39 @@ Do not add `--volumes` if you want to preserve the named profile volume.
 
 ## Live operation-reading capture
 
-The fixture suites build CDP events in process. This path sends the same scenarios through the running Chrome session.
+The fixture suites build CDP events in process. This companion path sends the same pressure scenarios through the running shared Chrome session and then verifies the captured operation reading.
 
 ```bash
 docker compose \
   -f compose.yaml \
   -f local.yaml \
   -f honeypot.yaml \
-  up -d --no-deps reading-honeypot
+  up -d --no-deps --build reading-honeypot
 
 BU_CDP_URL=http://127.0.0.1:${CDP_HOST_PORT:-9222} \
   ./bin/browser-automation run reading_honeypot --capture-traffic
+
+python3 tests/reading-honeypot-live.py \
+  .runs/reading_honeypot/<run-id>
 ```
 
-Chrome reaches `a.reading.test`, `b.reading.test`, `api.reading.test`, and `port.reading.test` on the compose network. The honeypot publishes no host port. `tests/reading-honeypot-live.py` reads the captured run and derives it.
+The verifier is the check surface: it reads the honeypot checkpoint target ID, builds a temporary target-only view of the shared-browser capture, derives operations there, and asserts the reviewed expectations in `automations/reading_honeypot/expectations.json`. It never rewrites the raw capture. A normal run must prove the redirect, stable/opaque paths, GraphQL variants and batch result provenance, canonical host observations, bucket grouping, reconciliation, and absence of fixture secrets.
+
+The deliberate fail-closed path is a separate run:
+
+```bash
+BU_CDP_URL=http://127.0.0.1:${CDP_HOST_PORT:-9222} \
+  ./bin/browser-automation run reading_honeypot \
+    --capture-traffic \
+    --input fail_closed=true
+
+python3 tests/reading-honeypot-live.py \
+  .runs/reading_honeypot/<fail-closed-run-id>
+```
+
+That run is successful at the browser checkpoint but its **operation derivation must fail in staging** because the captured requests deliberately place synthetic lifted values in a GraphQL comment and a JSON field name. The verifier confirms those traps were actually captured and that no derived index, step operations, or `traffic/secrets.env` were published.
+
+Chrome reaches `a.reading.test`, `b.reading.test`, `api.reading.test`, and `port.reading.test` only on the Compose network; the honeypot publishes no host port. Raw recorder evidence can still contain unrelated open-tab traffic and credentials, remains gitignored under `.runs/`, and should be deleted when the proof is no longer needed. Do not manually filter it for acceptance: use the target-isolating verifier above.
 
 ## Canonical container-network deployment
 
