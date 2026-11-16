@@ -406,6 +406,79 @@ def test_final_response_extra_info_survives_missing_redirect_extra_without_flag(
         shutil.rmtree(run, ignore_errors=True)
 
 
+def test_ambiguous_same_status_response_extra_fails_closed() -> None:
+    run = make_run(
+        ["step_a"],
+        [
+            raw(
+                1,
+                "Network.requestWillBeSent",
+                "redirect-same-status",
+                {
+                    "type": "Fetch",
+                    "request": {
+                        "method": "GET",
+                        "url": "https://a.example/start",
+                        "headers": {},
+                    },
+                },
+            ),
+            raw(
+                2,
+                "Network.requestWillBeSent",
+                "redirect-same-status",
+                {
+                    "type": "Fetch",
+                    "request": {
+                        "method": "GET",
+                        "url": "https://b.example/final",
+                        "headers": {},
+                    },
+                    "redirectResponse": {"status": 302},
+                },
+            ),
+            raw(
+                3,
+                "Network.responseReceived",
+                "redirect-same-status",
+                {
+                    "type": "Fetch",
+                    "response": {
+                        "url": "https://b.example/final",
+                        "status": 302,
+                        "mimeType": "text/plain",
+                        "headers": {},
+                    },
+                },
+            ),
+            raw(
+                4,
+                "Network.responseReceivedExtraInfo",
+                "redirect-same-status",
+                {
+                    "statusCode": 302,
+                    "headers": {"Set-Cookie": "ambiguous=do-not-publish; Path=/"},
+                },
+            ),
+        ],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 4, "target_id": "page-1"}],
+    )
+    try:
+        operations.derive_operations(run)
+        endpoints = read(
+            run / "steps" / "01-step_a" / "operations" / "endpoints.json"
+        )["operations"]
+        assert endpoints[0]["response"]["sets_cookies"] == []
+        derived_json = b"\n".join(
+            value
+            for key, value in snapshot(run).items()
+            if key != "traffic/secrets.env"
+        )
+        assert b"ambiguous" not in derived_json
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
 def test_failed_stage_never_publishes() -> None:
     run = make_run(
         ["step_a"],
@@ -1489,6 +1562,7 @@ test_redirect_replaces_request_facts()
 test_late_redirect_response_extra_info_does_not_contaminate_final_hop()
 test_final_response_extra_info_survives_missing_redirect_extra()
 test_final_response_extra_info_survives_missing_redirect_extra_without_flag()
+test_ambiguous_same_status_response_extra_fails_closed()
 test_failed_stage_never_publishes()
 test_failed_publication_restores_previous_generation()
 test_ambiguous_checkpoint_is_unattributed()

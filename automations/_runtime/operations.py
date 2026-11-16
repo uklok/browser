@@ -149,11 +149,12 @@ def _assemble(run: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
                             if isinstance(redirect_response, dict)
                             else None
                         )
-                        if redirect_status is not None:
+                        redirect_extra = params.get("redirectHasExtraInfo")
+                        if redirect_status is not None and redirect_extra is not False:
                             call["redirect_response_extra"].append(
                                 {
                                     "status": redirect_status,
-                                    "expected": params.get("redirectHasExtraInfo"),
+                                    "expected": redirect_extra,
                                 }
                             )
                         call["response_headers"] = {}
@@ -213,17 +214,6 @@ def _assemble(run: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
                         call["redirect_response_extra"].remove(explicit_redirect)
                         continue
 
-                    if (
-                        call["status"] is not None
-                        and extra_status is not None
-                        and str(extra_status) == str(call["status"])
-                    ):
-                        call["response_headers"] = _merge_headers(
-                            call["response_headers"],
-                            extra_headers,
-                        )
-                        continue
-
                     fallback_redirect = next(
                         (
                             item
@@ -235,7 +225,22 @@ def _assemble(run: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
                         None,
                     )
                     if fallback_redirect is not None:
+                        # Without redirectHasExtraInfo, an equal status cannot
+                        # distinguish a stale redirect event from the current hop.
+                        # Drop the ambiguous metadata rather than contaminate the
+                        # published reading.
                         call["redirect_response_extra"].remove(fallback_redirect)
+                        continue
+
+                    if (
+                        call["status"] is not None
+                        and extra_status is not None
+                        and str(extra_status) == str(call["status"])
+                    ):
+                        call["response_headers"] = _merge_headers(
+                            call["response_headers"],
+                            extra_headers,
+                        )
                         continue
 
                     if call["status"] is None:
