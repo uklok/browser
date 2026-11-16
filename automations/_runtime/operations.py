@@ -1251,13 +1251,17 @@ def _operation_identity_contains_secret(text: str, secret: str) -> bool:
     if text.startswith("http|"):
         if len(parts) < 4:
             return False
-        host, path = unquote(parts[2]), parts[3]
+        origin, path = unquote(parts[2]), parts[3]
     elif text.startswith("graphql|"):
         if len(parts) < 3:
             return False
-        host, path = unquote(parts[1]), parts[2]
+        origin, path = unquote(parts[1]), parts[2]
     else:
         return False
+    # Operation identities carry scheme://host[:port], but the scheme is
+    # structural identity rather than captured secret material. Inspect only
+    # the canonical host/port plus the path for lifted values.
+    host = _canonical_host(urlsplit(origin))
     host_leak = host == secret or (len(secret) >= 4 and secret in host)
     return host_leak or _path_contains_secret(path, secret)
 
