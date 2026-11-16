@@ -170,6 +170,96 @@ def test_redirect_replaces_request_facts() -> None:
         shutil.rmtree(run, ignore_errors=True)
 
 
+def test_late_redirect_response_extra_info_does_not_contaminate_final_hop() -> None:
+    run = make_run(
+        ["step_a"],
+        [
+            raw(
+                1,
+                "Network.requestWillBeSent",
+                "redirect-response-extra",
+                {
+                    "type": "Fetch",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://a.example/start",
+                        "headers": {"Content-Type": "application/json"},
+                        "postData": json.dumps({"amount": 5}),
+                    },
+                },
+            ),
+            raw(
+                2,
+                "Network.requestWillBeSentExtraInfo",
+                "redirect-response-extra",
+                {"headers": {}},
+            ),
+            raw(
+                3,
+                "Network.requestWillBeSent",
+                "redirect-response-extra",
+                {
+                    "type": "Fetch",
+                    "request": {
+                        "method": "GET",
+                        "url": "https://b.example/final",
+                        "headers": {},
+                    },
+                    "redirectResponse": {"status": 302},
+                },
+            ),
+            raw(
+                4,
+                "Network.responseReceivedExtraInfo",
+                "redirect-response-extra",
+                {
+                    "statusCode": 302,
+                    "headers": {"Set-Cookie": "intermediate=stale-value; Path=/"},
+                },
+            ),
+            raw(
+                5,
+                "Network.responseReceived",
+                "redirect-response-extra",
+                {
+                    "type": "Fetch",
+                    "response": {
+                        "url": "https://b.example/final",
+                        "status": 200,
+                        "mimeType": "application/json",
+                        "headers": {},
+                    },
+                },
+            ),
+            raw(
+                6,
+                "Network.responseReceivedExtraInfo",
+                "redirect-response-extra",
+                {
+                    "statusCode": 200,
+                    "headers": {"Set-Cookie": "finalcookie=final-value; Path=/"},
+                },
+            ),
+        ],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 6, "target_id": "page-1"}],
+    )
+    try:
+        operations.derive_operations(run)
+        step = run / "steps" / "01-step_a" / "operations"
+        endpoints = read(step / "endpoints.json")["operations"]
+        final = next(item for item in endpoints if item["key"] == "http|GET|b.example|/final")
+        assert final["response"]["sets_cookies"] == ["finalcookie"]
+        derived_json = b"\n".join(
+            value
+            for key, value in snapshot(run).items()
+            if key != "traffic/secrets.env"
+        )
+        assert b"intermediate" not in derived_json
+        assert b"amount" not in derived_json
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
 def test_failed_stage_never_publishes() -> None:
     run = make_run(
         ["step_a"],
@@ -841,6 +931,50 @@ def test_lifted_secret_inside_graphql_literal_fails_closed() -> None:
         shutil.rmtree(run, ignore_errors=True)
 
 
+def test_lifted_secret_inside_graphql_comment_fails_closed() -> None:
+    secret = "header-secret-1234"
+    run = make_run(
+        ["step_a"],
+        [
+            raw(
+                1,
+                "Network.requestWillBeSent",
+                "gql-comment-secret",
+                {
+                    "type": "Fetch",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://gql.example/graphql",
+                        "headers": {
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {secret}",
+                        },
+                        "postData": json.dumps(
+                            {
+                                "operationName": "Echo",
+                                "query": f"query Echo {{ thing {{ id }} }} # note {secret}",
+                            }
+                        ),
+                    },
+                },
+            ),
+        ],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 1, "target_id": "page-1"}],
+    )
+    try:
+        try:
+            operations.derive_operations(run)
+        except operations.OperationReadError as exc:
+            assert "secret survived in derived artifact" in str(exc)
+        else:
+            raise AssertionError("a lifted secret embedded in a GraphQL comment must fail closed")
+        assert not (run / "operations").exists()
+        assert not (run / "steps" / "01-step_a" / "operations").exists()
+        assert not (run / "traffic" / "secrets.env").exists()
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
 def test_short_lifted_secret_in_path_fails_closed() -> None:
     secret = "s3cr"
     run = make_run(
@@ -869,6 +1003,45 @@ def test_short_lifted_secret_in_path_fails_closed() -> None:
             assert "secret survived in derived artifact" in str(exc)
         else:
             raise AssertionError("a short lifted secret in an operation path must fail closed")
+        assert not (run / "operations").exists()
+        assert not (run / "steps" / "01-step_a" / "operations").exists()
+        assert not (run / "traffic" / "secrets.env").exists()
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
+def test_lifted_secret_used_as_schema_property_name_fails_closed() -> None:
+    secret = "NonsensitiveOpaqueValue"
+    run = make_run(
+        ["step_a"],
+        [
+            raw(
+                1,
+                "Network.requestWillBeSent",
+                "field-secret",
+                {
+                    "type": "XHR",
+                    "request": {
+                        "method": "POST",
+                        "url": "https://api.example/widgets",
+                        "headers": {
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {secret}",
+                        },
+                        "postData": json.dumps({secret: "ordinary-value"}),
+                    },
+                },
+            ),
+        ],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 1, "target_id": "page-1"}],
+    )
+    try:
+        try:
+            operations.derive_operations(run)
+        except operations.OperationReadError as exc:
+            assert "secret survived in derived artifact" in str(exc)
+        else:
+            raise AssertionError("a lifted secret used as an observed schema property must fail closed")
         assert not (run / "operations").exists()
         assert not (run / "steps" / "01-step_a" / "operations").exists()
         assert not (run / "traffic" / "secrets.env").exists()
@@ -921,6 +1094,39 @@ def test_opaque_path_material_is_templated() -> None:
         derived = b"\n".join(snapshot(run).values())
         for value in opaque:
             assert value.encode() not in derived
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+
+
+def test_stable_alphabetic_paths_are_not_templated() -> None:
+    stable = ["acknowledgements", "GetCurrentUserProfile"]
+    run = make_run(
+        ["step_a"],
+        [
+            raw(
+                seq,
+                "Network.requestWillBeSent",
+                f"stable-{seq}",
+                {
+                    "type": "XHR",
+                    "request": {
+                        "method": "GET",
+                        "url": f"https://api.example/{segment}",
+                        "headers": {},
+                    },
+                },
+            )
+            for seq, segment in enumerate(stable, 1)
+        ],
+        [{"step": "step_a", "from_seq": 1, "through_seq": 2, "target_id": "page-1"}],
+    )
+    try:
+        index = operations.derive_operations(run)
+        assert index["operation_keys"] == [
+            "http|GET|api.example|/GetCurrentUserProfile",
+            "http|GET|api.example|/acknowledgements",
+        ]
+        assert "http|GET|api.example|/{id}" not in index["operation_keys"]
     finally:
         shutil.rmtree(run, ignore_errors=True)
 
@@ -1134,6 +1340,7 @@ def test_scale_reconciliation() -> None:
 
 
 test_redirect_replaces_request_facts()
+test_late_redirect_response_extra_info_does_not_contaminate_final_hop()
 test_failed_stage_never_publishes()
 test_failed_publication_restores_previous_generation()
 test_ambiguous_checkpoint_is_unattributed()
@@ -1145,8 +1352,11 @@ test_repeated_graphql_batch_name_keeps_entry_evidence()
 test_host_identity_and_openapi_names()
 test_secret_verification_distinguishes_names_from_values()
 test_lifted_secret_inside_graphql_literal_fails_closed()
+test_lifted_secret_inside_graphql_comment_fails_closed()
 test_short_lifted_secret_in_path_fails_closed()
+test_lifted_secret_used_as_schema_property_name_fails_closed()
 test_opaque_path_material_is_templated()
+test_stable_alphabetic_paths_are_not_templated()
 test_equivalent_runs_keep_semantic_identity()
 test_scale_reconciliation()
 

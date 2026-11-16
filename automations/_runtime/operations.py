@@ -85,6 +85,7 @@ def _new_call(key: str, session: Any, request: Any) -> dict[str, Any]:
         "request_extra_info_hop": 0,
         "pending_request_extra_headers": {},
         "response_headers": {},
+        "pending_response_extra": [],
         "post_data": None,
         "status": None,
         "mime": None,
@@ -142,6 +143,7 @@ def _assemble(run: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
                     call["post_data"] = request.get("postData") if isinstance(request.get("postData"), str) else None
                     if redirect:
                         call["response_headers"] = {}
+                        call["pending_response_extra"] = []
                         call["status"] = None
                         call["mime"] = None
                         call["body"] = None
@@ -161,9 +163,31 @@ def _assemble(run: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
                     call["status"] = response.get("status")
                     call["mime"] = str(response.get("mimeType") or call["mime"] or "")
                     call["response_headers"] = _merge_headers(call["response_headers"], _headers(response.get("headers")))
+                    pending = call["pending_response_extra"]
+                    for extra in pending:
+                        if (
+                            call["status"] is not None
+                            and extra.get("status") is not None
+                            and str(extra["status"]) == str(call["status"])
+                        ):
+                            call["response_headers"] = _merge_headers(
+                                call["response_headers"],
+                                extra["headers"],
+                            )
+                    call["pending_response_extra"] = []
                 elif method == "Network.responseReceivedExtraInfo":
-                    call["response_headers"] = _merge_headers(call["response_headers"], _headers(params.get("headers")))
-                    call["status"] = call["status"] if call["status"] is not None else params.get("statusCode")
+                    extra_status = params.get("statusCode")
+                    extra_headers = _headers(params.get("headers"))
+                    if (
+                        call["status"] is not None
+                        and extra_status is not None
+                        and str(extra_status) == str(call["status"])
+                    ):
+                        call["response_headers"] = _merge_headers(call["response_headers"], extra_headers)
+                    elif call["status"] is None:
+                        call["pending_response_extra"].append(
+                            {"status": extra_status, "headers": extra_headers}
+                        )
                 elif method == "Network.loadingFailed" and call["body"] is None:
                     call["body"] = {"status": "unavailable", "reason": "loading_failed"}
 
@@ -262,7 +286,7 @@ def _identifier(segment: str) -> bool:
         and not digits
         and not punctuation
         and unique_ratio >= 0.55
-        and _entropy(decoded) >= 3.5
+        and _entropy(decoded) >= 4.0
     ):
         return True
     return False
@@ -1078,8 +1102,31 @@ SECRET_NAME_FIELDS = {
     "sets_cookies",
     "owner_candidates",
     "variants",
-    "x-uklok-observed-present",
-    "x-uklok-observed-on-all",
+}
+
+SAFE_NAME_VALUE_FIELDS = {
+    "name",
+    "operation_name",
+    "host",
+    "method",
+    "kind",
+    "schema",
+    "scope",
+    "authority",
+    "step",
+    "type",
+    "in",
+    "status",
+    "reason",
+    "summary",
+    "description",
+    "title",
+    "observed_on_all_calls",
+    "observed_on_any_call",
+    "path_parameters",
+    "sets_cookies",
+    "owner_candidates",
+    "variants",
 }
 
 
@@ -1093,21 +1140,22 @@ def _string_values(value: Any, path: tuple[str, ...] = ()) -> list[tuple[tuple[s
     return []
 
 
-def _graphql_secret_literal(text: str, secret: str) -> bool:
-    for match in GQL_IDENTITY_LITERAL.finditer(text):
-        raw = match.group(0)
-        if raw.startswith('"'):
-            try:
-                value = json.loads(raw)
-            except json.JSONDecodeError:
-                value = raw[1:-1]
-        else:
-            value = raw
-        if str(value) == secret:
-            return True
-        if isinstance(value, str) and len(secret) >= 4 and secret in value:
-            return True
-    return False
+def _contains_secret(text: str, secret: str, *, embedded_floor: int = 4) -> bool:
+    return text == secret or (len(secret) >= embedded_floor and secret in text)
+
+
+def _schema_property_names(value: Any) -> set[str]:
+    out: set[str] = set()
+    if isinstance(value, dict):
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            out.update(str(key) for key in properties)
+        for child in value.values():
+            out.update(_schema_property_names(child))
+    elif isinstance(value, list):
+        for child in value:
+            out.update(_schema_property_names(child))
+    return out
 
 
 def _path_contains_secret(path: str, secret: str) -> bool:
@@ -1117,7 +1165,7 @@ def _path_contains_secret(path: str, secret: str) -> bool:
         segment = unquote(raw_segment)
         if not segment or (segment.startswith("{") and segment.endswith("}")):
             continue
-        if segment == secret or (len(secret) >= 4 and secret in segment):
+        if _contains_secret(segment, secret):
             return True
     return False
 
@@ -1192,15 +1240,33 @@ def verify_reading(run: Path) -> None:
     secrets = _secret_values(run)
     files = list((run / "operations").rglob("*.json")) if (run / "operations").is_dir() else []
     files += [p for d in (run / "steps").glob("*/operations") for p in d.rglob("*.json")] if (run / "steps").is_dir() else []
+
+    artifacts: list[tuple[Path, dict[str, Any]]] = []
+    safe_names: set[str] = set()
     for path in files:
         value = json.loads(path.read_text())
         if _artifact_generation(value) != expected_generation:
             raise OperationReadError(f"mixed or missing generation identity: {path}")
+        artifacts.append((path, value))
+        for string_path, text in _string_values(value):
+            if string_path and string_path[-1] in SAFE_NAME_VALUE_FIELDS:
+                safe_names.add(text)
+
+    for path, value in artifacts:
+        for property_name in _schema_property_names(value):
+            for secret in secrets:
+                if _contains_secret(property_name, secret) and property_name not in safe_names:
+                    raise OperationReadError(f"secret survived in derived artifact: {path}")
+
         for string_path, text in _string_values(value):
             field = string_path[-1] if string_path else ""
             for secret in secrets:
                 if field == "documents":
-                    if _graphql_secret_literal(text, secret):
+                    if _contains_secret(text, secret):
+                        raise OperationReadError(f"secret survived in derived artifact: {path}")
+                    continue
+                if field in {"x-uklok-observed-present", "x-uklok-observed-on-all"}:
+                    if _contains_secret(text, secret) and text not in safe_names:
                         raise OperationReadError(f"secret survived in derived artifact: {path}")
                     continue
                 if field == "path" and _path_contains_secret(text, secret):
