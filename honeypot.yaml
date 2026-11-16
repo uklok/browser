@@ -1,0 +1,16 @@
+services:
+  reading-honeypot:
+    build:
+      context: ./honeypot
+    image: uklok/reading-honeypot:local
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      default:
+        aliases:
+          - a.reading.test
+          - b.reading.test
+          - api.reading.test
+          - port.reading.test
+          - API.reading.test

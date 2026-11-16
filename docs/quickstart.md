@@ -55,6 +55,23 @@ docker compose \
 
 Do not add `--volumes` if you want to preserve the named profile volume.
 
+## Live operation-reading capture
+
+The fixture suites build CDP events in process. This path sends the same scenarios through the running Chrome session.
+
+```bash
+docker compose \
+  -f compose.yaml \
+  -f local.yaml \
+  -f honeypot.yaml \
+  up -d --no-deps reading-honeypot
+
+BU_CDP_URL=http://127.0.0.1:${CDP_HOST_PORT:-9222} \
+  ./bin/browser-automation run reading_honeypot --capture-traffic
+```
+
+Chrome reaches `a.reading.test`, `b.reading.test`, `api.reading.test`, and `port.reading.test` on the compose network. The honeypot publishes no host port. `tests/reading-honeypot-live.py` reads the captured run and derives it.
+
 ## Canonical container-network deployment
 
 `compose.yaml` publishes no host ports:

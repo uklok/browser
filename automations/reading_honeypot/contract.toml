@@ -1,0 +1,78 @@
+schema = "uklok.browser.automation/v1"
+id = "reading_honeypot"
+version = 1
+status = "ready"
+intent = "Drive the shared Chrome session through the reading honeypot so operation readings can be measured from real CDP capture."
+module = "run.py"
+
+[trigger]
+description = "Manual live proof for derived operation reading. Requires the reading-honeypot compose service."
+
+[authority]
+allowed = [
+  "Open the honeypot health page in a browser tab.",
+  "Issue the scripted honeypot requests from that page.",
+]
+forbidden = [
+  "Call any origin other than the reading honeypot.",
+  "Change authenticated account state.",
+]
+
+[[inputs]]
+name = "origin"
+type = "url"
+required = false
+sensitive = false
+default = "http://a.reading.test"
+description = "Honeypot origin opened in Chrome."
+
+[[inputs]]
+name = "secret"
+type = "string"
+required = false
+sensitive = true
+default = "live-hop-secret-1842"
+description = "Credential the page sends on the redirect POST. It stays in the gitignored capture."
+
+[[inputs]]
+name = "include_comment"
+type = "bool"
+required = false
+sensitive = false
+default = false
+description = "Also send a GraphQL comment that repeats the secret, so reading must fail closed."
+
+[[preconditions]]
+id = "browser_ready"
+condition = "UKLOK Browser is healthy, CDP is reachable, and reading-honeypot is on the same Docker network."
+
+[[algorithm]]
+id = "open_honeypot"
+pseudocode = """
+OPEN input.origin /health in a new tab.
+WAIT until the page loads.
+READ document.title.
+"""
+checkpoint = "The tab title is reading honeypot."
+on_failure = "Stop. Chrome cannot reach the honeypot, so later requests would not be a live capture."
+resume = "safe"
+known_variants = []
+
+[[algorithm]]
+id = "exercise"
+pseudocode = """
+FROM the honeypot page, FETCH the redirect, path, host, GraphQL, and bucket scenarios.
+IF input.include_comment, also POST a GraphQL comment containing input.secret.
+RETURN the per-request status list.
+"""
+checkpoint = "The page script finished the scenario list, including the redirect request."
+on_failure = "Stop and inspect the browser console and honeypot logs."
+resume = "safe"
+known_variants = []
+
+[success]
+condition = "Chrome opened the honeypot and issued the scenario requests."
+
+[failure]
+capture_screenshot = true
+agent_skill = ".agents/skills/browser-automation/SKILL.md"
