@@ -1477,7 +1477,7 @@ def test_equivalent_runs_keep_semantic_identity() -> None:
         expected_keys = [
             "graphql|https://api.example|/graphql|json|GetThing",
             "http|GET|https://api.example|/users/{id}",
-            "http|POST|api.example|/widgets",
+            "http|POST|https://api.example|/widgets",
         ]
         assert index_a["operation_keys"] == index_b["operation_keys"] == expected_keys
         assert semantic_reading(run_a) == semantic_reading(run_b)
