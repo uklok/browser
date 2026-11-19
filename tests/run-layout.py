@@ -17,11 +17,18 @@ SPEC.loader.exec_module(execute)
 
 
 with tempfile.TemporaryDirectory() as raw_tmp:
-    root = Path(raw_tmp)
+    temp_root = Path(raw_tmp)
+    physical_root = temp_root / "physical-run-root"
+    physical_root.mkdir()
+    root = temp_root / "run-root-alias"
+    root.symlink_to(physical_root, target_is_directory=True)
+
     step_dir = execute._step_workspace(root, 2, "submit_proposal")
     assert step_dir == root / "steps" / "02-submit_proposal"
     assert step_dir.is_dir()
 
+    canonical_step_dir = step_dir.resolve()
+    assert canonical_step_dir != step_dir
     ctx = {
         "automation": "layout_test",
         "step_dir": str(step_dir),
@@ -29,9 +36,12 @@ with tempfile.TemporaryDirectory() as raw_tmp:
         "run_root": str(root),
     }
 
-    assert execute._artifact_path(ctx, "invitation.json") == step_dir / "invitation.json"
-    assert execute._artifact_path(ctx, "/tmp/open_apply.png") == step_dir / "open_apply.png"
-    assert execute._artifact_path(ctx, "details/response.json") == step_dir / "details" / "response.json"
+    assert execute._artifact_path(ctx, "invitation.json") == canonical_step_dir / "invitation.json"
+    assert execute._artifact_path(ctx, "/tmp/open_apply.png") == canonical_step_dir / "open_apply.png"
+    assert (
+        execute._artifact_path(ctx, "details/response.json")
+        == canonical_step_dir / "details" / "response.json"
+    )
 
     try:
         execute._artifact_path(ctx, "../escape.json")
@@ -39,6 +49,18 @@ with tempfile.TemporaryDirectory() as raw_tmp:
         pass
     else:
         raise AssertionError("step artifacts must not escape their checkpoint directory")
+
+    outside_dir = temp_root / "outside"
+    outside_dir.mkdir()
+    escape_link = step_dir / "escape-link"
+    escape_link.symlink_to(outside_dir, target_is_directory=True)
+
+    try:
+        execute._artifact_path(ctx, "escape-link/leak.json")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("symlinked step artifacts must not escape their checkpoint directory")
 
     screenshot_calls = []
 
@@ -55,6 +77,6 @@ with tempfile.TemporaryDirectory() as raw_tmp:
     namespace = execute._load_module(module, {"capture_screenshot": fake_screenshot}, ctx)
     result = namespace["step_capture"](ctx)
     assert result["ok"] is True
-    assert screenshot_calls[0][0] == step_dir / "open_home.png"
+    assert screenshot_calls[0][0] == canonical_step_dir / "open_home.png"
 
 print("run layout validation passed")
