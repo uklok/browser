@@ -323,6 +323,8 @@ For one-invocation capture plus reading, opt in explicitly:
 
 These artifacts are reverse-engineering evidence. They do **not** replay requests, generate an executable client, edit `contract.toml`, perform GraphQL introspection, or promote an observed operation into reusable automation behavior.
 
+Programmatic callers (such as the exploration core) should depend on the provider-neutral `TrafficStructureProvider` boundary in `automations/_runtime/structure_provider.py` rather than private functions in `operations.py`. See [Traffic-to-structure evaluation](traffic-structure-evaluation.md) for the ownership boundary and external-provider benchmarks.
+
 ## Checkpoints
 
 Before each step the runtime writes local state. After a passing step it writes an event containing the observed evidence.
