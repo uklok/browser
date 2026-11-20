@@ -7,6 +7,7 @@ Start with the task you are trying to complete. You should not need to read thes
 | Start | [Quick start](quickstart.md) | Which Compose files do I run? |
 | Agent control | [Browser Use — Phase A](browser-use.md) | How does an agent operate the existing Chrome with minimal setup? |
 | Automate | [Browser automations](automations.md) | How do learned browser behaviors become deterministic, checkpointed automations? |
+| Traffic structure | [Traffic-to-structure evaluation](traffic-structure-evaluation.md) | Which traffic-derivation responsibilities belong in UKLOK vs external tooling? |
 | Mental model | [Architecture](architecture.md) | Which process owns which surface? |
 | Browser identity | [Profiles & identity](profiles.md) | Where do cookies/logins live and what can be reused? |
 | Diagnose | [Operations](operations.md) | What do I inspect when Chrome/noVNC/CDP fails? |
